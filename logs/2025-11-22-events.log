@@ -1,0 +1,3 @@
+{"level":"info","message":{"action":"APP_IS_RUNNING_ON_4000","actor":{"email":null,"id":null,"ip":null,"user_agent":null},"details":{},"timestamp":"2025-11-22T06:00:23.187Z"},"timestamp":"2025-11-22T06:00:23.189Z"}
+{"level":"info","message":{"action":"LOGIN_SUCCESS","actor":{"email":"hr@company.com","id":1,"ip":"unknown","user_agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0"},"details":{},"timestamp":"2025-11-22T06:00:49.612Z"},"timestamp":"2025-11-22T06:00:49.612Z"}
+{"level":"info","message":{"action":"APP_IS_RUNNING_ON_4000","actor":{"email":null,"id":null,"ip":null,"user_agent":null},"details":{},"timestamp":"2025-11-22T06:17:54.647Z"},"timestamp":"2025-11-22T06:17:54.649Z"}
