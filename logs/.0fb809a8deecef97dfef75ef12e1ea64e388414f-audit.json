@@ -1,0 +1,74 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 60
+    },
+    "auditLog": "logs\\.0fb809a8deecef97dfef75ef12e1ea64e388414f-audit.json",
+    "files": [
+        {
+            "date": 1763093200906,
+            "name": "logs\\2025-11-14-events.log",
+            "hash": "2ef858fed5ad3d33a959a91a8f91c6df"
+        },
+        {
+            "date": 1763791221103,
+            "name": "logs\\2025-11-22-events.log",
+            "hash": "e90d4f20ea23dedd7ee48e4cfbc6e6e1"
+        },
+        {
+            "date": 1763950356294,
+            "name": "logs\\2025-11-24-events.log",
+            "hash": "9db1e032739f5c25679ed171f414de7f"
+        },
+        {
+            "date": 1764032964964,
+            "name": "logs\\2025-11-25-events.log",
+            "hash": "a06780481104a614402988c75a28261a"
+        },
+        {
+            "date": 1764123194625,
+            "name": "logs\\2025-11-26-events.log",
+            "hash": "bf086164d5eeb5711569c5e57b82dd30"
+        },
+        {
+            "date": 1764207875215,
+            "name": "logs\\2025-11-27-events.log",
+            "hash": "3cc7ea23e94c710c1ba9dcbc2b60c090"
+        },
+        {
+            "date": 1764277952253,
+            "name": "logs\\2025-11-28-events.log",
+            "hash": "1e21c6563ced59645501ed249f1f85e2"
+        },
+        {
+            "date": 1764557112207,
+            "name": "logs\\2025-12-01-events.log",
+            "hash": "973be0e3d7e2187a025440a07d4b2a08"
+        },
+        {
+            "date": 1764616049639,
+            "name": "logs\\2025-12-02-events.log",
+            "hash": "d8d3fabcbf385fd4846302522851a17b"
+        },
+        {
+            "date": 1764725333249,
+            "name": "logs\\2025-12-03-events.log",
+            "hash": "d308a871fa5ea97add1f898bfccbd9d6"
+        },
+        {
+            "date": 1764824206979,
+            "name": "logs\\2025-12-04-events.log",
+            "hash": "73e1113782018c8d464990d402825b71"
+        },
+        {
+            "date": 1764874508283,
+            "name": "logs\\2025-12-05-events.log",
+            "hash": "b50c514842d2b3ce230cf5dd27481239"
+        },
+        {
+            "date": 1765081846607,
+            "name": "logs\\2025-12-07-events.log",
+            "hash": "25abd68270beeb80375fd73a1d78e0ae"
+        }
+    ]
+}
