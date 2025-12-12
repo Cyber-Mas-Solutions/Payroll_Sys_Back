@@ -22,23 +22,23 @@ async function logEvent({ level = 'info', event_type, user_id = null, email = nu
   }
 
   // Insert into DB
-  try {
-    const sql = `
-      INSERT INTO event_logs
-      (event_type, user_id, severity, event_details, created_at)
-      VALUES (?, ?, ?, ?, NOW())
-    `;
-    const params = [
-      event_type,
-      user_id,
-      level.toUpperCase(),
-      JSON.stringify(logPayload)
-    ];
+  // try {
+  //   const sql = `
+  //     INSERT INTO event_logs
+  //     (event_type, user_id, severity, event_details, created_at)
+  //     VALUES (?, ?, ?, ?, NOW())
+  //   `;
+  //   const params = [
+  //     event_type,
+  //     user_id,
+  //     level.toUpperCase(),
+  //     JSON.stringify(logPayload)
+  //   ];
 
-    await pool.query(sql, params);
-  } catch (err) {
-    console.error('Failed to insert event log into DB', err);
-  }
+  //   await pool.query(sql, params);
+  // } catch (err) {
+  //   console.error('Failed to insert event log into DB', err);
+  // }
 }
 
 module.exports = logEvent;
