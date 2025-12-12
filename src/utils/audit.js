@@ -29,8 +29,8 @@ async function logAudit({ level = "info", user_id, action_type, target_table, ta
     try {
         const sql = `
       INSERT INTO audit_logs
-      (user_id, action_type, target_table, target_id, before_state, after_state, ip_address, status, error_message)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (user_id, action_type, target_table, target_id, before_state, after_state, ip_address, status, error_message, different)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
         const params = [
@@ -42,7 +42,8 @@ async function logAudit({ level = "info", user_id, action_type, target_table, ta
             after_state ? JSON.stringify(after_state) : null,
             ip,
             status,
-            error_message
+            error_message,
+            diff
         ];
 
         await pool.query(sql, params);
