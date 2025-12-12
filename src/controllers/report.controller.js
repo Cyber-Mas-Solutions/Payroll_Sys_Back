@@ -38,9 +38,7 @@ const getMonthlyTotalData = async (req, res) => {
 
   } catch (err) {
     console.error("Error in getMonthlyTotalData:", err);
-    logEvent({
-      level: 'error', event_type: "GET_PAYROLL_SUMMARY", user_id: req.user?.id || null, event_details: { err }, error_message: err.message
-    })
+    logEvent({ level: 'error', event_type: "GET_PAYROLL_SUMMARY", user_id: req.user?.id || null, req ,extra:{err}})
     res.status(500).json({ error: "Database query failed" });
   }
 };
@@ -55,10 +53,7 @@ const getSalaryRange = async (req, res) => {
     res.json(rows.map(r => r.basic_salary));
   } catch (err) {
     console.error('Failed to fetch salaries:', err);
-    logEvent({level:'error',  event_type: "GET_SALARY_LIST",
-      user_id: req.user?.id || null,
-      event_details: { err },
-      error_message: err.message })
+    logEvent({level:'error',  event_type: "GET_SALARY_LIST_ERROR",  user_id: req.user?.id || null, req, extra:{err}});
     res.status(500).json({ error: 'Database query failed' });
   }
 };
@@ -87,10 +82,7 @@ const compensateTrend = async (req, res) => {
     res.json(rows);
   } catch (err) {
     console.error("Error in compensateTrend:", err);
-    logEvent({level:'error',  event_type: "GET_COMPENSATE_TRENDS",
-      user_id: req.user?.id || null,
-      event_details: { err },
-      error_message: err.message})
+    logEvent({level:'error',  event_type: "GET_COMPENSATE_TRENDS", user_id: req.user?.id || null, req,extra : {err}});
     res.status(500).json({ error: 'Database query failed' });
   }
 };
@@ -120,12 +112,7 @@ const getDeductionsByType = async (req, res) => {
     res.json(rows);
   } catch (err) {
     console.error('Error fetching deductions by type:', err);
-    logEvent({
-      level: 'error', event_type: "GET_DEDUCTION_BY_TYPE",
-      user_id: req.user?.id || null,
-      event_details: { err },
-      error_message: err.message
-    })
+    logEvent({ level: 'error', event_type: "GET_DEDUCTION_BY_TYPE_ERROR", user_id: req.user?.id || null, req, extra : {err}})
     res.status(500).json({ error: 'Database query failed' });
   }
 };
@@ -156,12 +143,7 @@ const getAllowancesByType = async (req, res) => {
     res.json(rows);
   } catch (err) {
     console.error('Error fetching allowances by type:', err);
-    logEvent({
-      level: 'error', event_type: "GET_ALLOWANCE_BY_TYPE",
-      user_id: req.user?.id || null,
-      event_details: { err },
-      error_message: err.message
-    })
+    logEvent({ level: 'error', event_type: "GET_ALLOWANCE_BY_TYPE_FAIL", user_id: req.user?.id || null, req, extra : {err}})
 
     res.status(500).json({ error: 'Database query failed' });
   }
@@ -200,12 +182,7 @@ const getBonusesByType = async (req, res) => {
     res.json(rows);
   } catch (err) {
     console.error('Error fetching bonuses by type:', err);
-    logEvent({
-      level: 'error', event_type: "GET_BONUS_BY_TYPE",
-      user_id: req.user?.id || null,
-      event_details: { err },
-      error_message: err.message
-    })
+    logEvent({ level: 'error', event_type: "GET_BONUS_BY_TYPE_FAIL", user_id: req.user?.id || null, req, extra : {err}})
     res.status(500).json({ error: 'Database query failed' });
   }
 };
@@ -259,12 +236,7 @@ const getEmployeeInsights = async (req, res) => {
 
   } catch (error) {
     console.error('Error fetching employee insights:', error);
-    logEvent({
-      level: 'error', event_type: "GET_EMPLOYEE_SUMMARY",
-      user_id: req.user?.id || null,
-      event_details: { err },
-      error_message: err.message
-    })
+    logEvent({ level: 'error', event_type: "GET_EMPLOYEE_SUMMARY", user_id: req.user?.id || null, req, extra : {err}})
     res.status(500).json({ ok: false, message: 'Database query failed' });
   }
 };

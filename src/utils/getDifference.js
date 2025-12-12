@@ -1,4 +1,7 @@
- function getDifferences(before, after) {
+function getDifferences(before = {}, after = {}) {
+  if (!before) before = {};
+  if (!after) after = {};
+
   const diff = {};
   for (const key in after) {
     if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) {
