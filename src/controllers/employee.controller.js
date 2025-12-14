@@ -230,6 +230,7 @@ exports.createEmployee = async (req, res) => {
     };
 
     logAudit({
+      level:'info',
       user_id: req.user.id,
       action_type: "CREATE_EMPLOYEE",
       target_table: "employees",
@@ -240,12 +241,12 @@ exports.createEmployee = async (req, res) => {
       status: "SUCCESS"
     });
 
-
     res.status(201).json({ ok: true, id: employeeId, message: 'Employee created' });
   } catch (e) {
     await conn.rollback();
     console.error(e);
     logAudit({
+      level:'error', 
       user_id: req.user?.id || null,
       action_type: "CREATE_EMPLOYEE",
       target_table: "employees",
@@ -277,7 +278,7 @@ exports.getEmployees = async (req, res) => {
     res.json({ ok: true, data: rows });
 
   } catch (error) {
-    logEvent({ level: "error", event_type: "GET_EMPLOYEES_FAILURE", user_id: req.user?.id || null, event_details: { error }, error_message: error.message })
+    logEvent({ level: "error", event_type: "GET_EMPLOYEES_FAILURE", user_id: req.user?.id || null, extra :{ error} })
     res.status(500).json({ ok: false, message: "Failed to fetch employees" });
   }
 };
@@ -334,7 +335,7 @@ exports.getEmployeeById = async (req, res) => {
 
     res.json({ ok: true, data: emp });
   } catch (error) {
-    logEvent({ level: "error", event_type: "GET_EMPLOYEE_FAILED", user_id: req.user?.id || null, event_details: { error }, error_message: error.message })
+    logEvent({ level: "error", event_type: "GET_EMPLOYEE_FAILED", user_id: req.user?.id || null, extra:{error} })
 
     res.status(500).json({ ok: false, message: "Failed to fetch employee" });
   }
@@ -491,8 +492,8 @@ exports.updateEmployee = async (req, res) => {
     const [afterRows] = await conn.query('SELECT * FROM employees WHERE id = ?', [id]);
     const after_state = afterRows[0];
 
-    // Audit log
     logAudit({
+      level:'info',
       user_id: req.user.id,
       action_type: "UPDATE_EMPLOYEE",
       target_table: "employees",
@@ -508,6 +509,7 @@ exports.updateEmployee = async (req, res) => {
     await conn.rollback();
     console.error(e);
     logAudit({
+      level:"error",
       user_id: req.user.id,
       action_type: "UPDATE_EMPLOYEE",
       target_table: "employees",
@@ -540,6 +542,7 @@ exports.deleteEmployee = async (req, res) => {
     await conn.query('DELETE FROM employees WHERE id = ?', [id]);
 
     logAudit({
+      level:'info',
       user_id: req.user.id,
       action_type: "DELETE_EMPLOYEE",
       target_table: "employees",
@@ -556,12 +559,13 @@ exports.deleteEmployee = async (req, res) => {
     await conn.rollback();
     console.error(err);
     logAudit({
+      level:'error',
       user_id: req.user.id,
       action_type: "DELETE_EMPLOYEE",
       target_table: "employees",
       target_id: id,
       before_state: before_state || null,
-      after_state: null, // fixed typo
+      after_state: null,
       req,
       status: "FAILURE",
       error_message: e.message
@@ -599,6 +603,7 @@ exports.deleteEmployeeDocument = async (req, res) => {
 
     // Audit (SUCCESS)
     logAudit({
+      level:'info',
       user_id: req.user?.id || null,
       action_type: "DELETE_EMPLOYEE_DOCUMENT",
       target_table: "employee_documents",
@@ -616,6 +621,7 @@ exports.deleteEmployeeDocument = async (req, res) => {
 
     // Audit (FAILURE)
     logAudit({
+      level:'error',
       user_id: req.user?.id || null,
       action_type: "DELETE_EMPLOYEE_DOCUMENT",
       target_table: "employee_documents",
@@ -673,6 +679,7 @@ exports.replaceEmployeeDocument = async (req, res) => {
 
     // Audit (SUCCESS)
     logAudit({
+      level:'info',
       user_id: req.user?.id || null,
       action_type: "REPLACE_EMPLOYEE_DOCUMENT",
       target_table: "employee_documents",
@@ -690,6 +697,7 @@ exports.replaceEmployeeDocument = async (req, res) => {
 
     // Audit (FAILURE)
     logAudit({
+      level:'info',
       user_id: req.user?.id || null,
       action_type: "REPLACE_EMPLOYEE_DOCUMENT",
       target_table: "employee_documents",
@@ -740,6 +748,7 @@ exports.getPerformanceOverview = async (req, res) => {
     res.json({ ok: true, data: rows });
   } catch (err) {
     console.error(err);
+    logEvent({level:'error', event_type:"GET_PERFORMANCE_OVERVIEW_FAILED", user_id:req.user?.id , req, extra:{err}})
     res.status(500).json({ ok: false, message: 'Failed to load performance overview' });
   }
 };
@@ -770,9 +779,12 @@ exports.addPerformanceReview = async (req, res) => {
       ]
     );
 
+    logAudit({level:'info', user_id:req.user.id, action_type:"ADD_PERFORMANCE_REVIEW", target_table:'employee_performance_review', target_id:employee_id, before_state:null, after_state: result, status:"SUCCESS", req})
+
     res.status(201).json({ ok: true, id: result.insertId, message: 'Performance review added' });
   } catch (err) {
     console.error(err);
+    logAudit({level:'error', user_id:req.user.id, action_type:"ADD_PERFORMANCE_REVIEW", target_table:'employee_performance_review', target_id:req.body.employee_id, status:"FAILURE", req, error_message: err})
     res.status(500).json({ ok: false, message: 'Failed to add performance review' });
   }
 };
@@ -818,6 +830,7 @@ exports.getTrainingOverview = async (req, res) => {
     res.json({ ok: true, data: rows });
   } catch (err) {
     console.error(err);
+    logEvent({level:"info", event_type:"GET_TRAINING_OVERVIEW_FAILED", user:req.user.id, req, extra:{err}});
     res.status(500).json({ ok: false, message: 'Failed to load training overview' });
   }
 };
@@ -854,9 +867,12 @@ exports.addTrainingRecord = async (req, res) => {
       ]
     );
 
+    logAudit({level:'info', user_id:req.user.id, action_type:'ADD_TRAINING_RECORD', target_table:"employee_trainning_records", target_id:result.insertId, before_state:null, after_state: result, status:"SUCCESS", req})
+
     res.status(201).json({ ok: true, id: result.insertId, message: 'Training record added' });
   } catch (err) {
     console.error(err);
+    logAudit({level:'error', user_id:req.user.id, action_type:'ADD_TRAINING_RECORD', target_table:"employee_trainning_records", target_id:null, before_state:null, after_state: null, status:"FAILURE", req, error_message: err})
     res.status(500).json({ ok: false, message: 'Failed to add training record' });
   }
 };

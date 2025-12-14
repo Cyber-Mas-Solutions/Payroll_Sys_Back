@@ -14,6 +14,7 @@ const reportRoutes = require('./routes/report.route');
 const attendanceRoutes = require('./routes/attendance.routes');
 const leaveRoutes = require('./routes/leave.routes');
 const contractsRoutes = require('./routes/contracts.routes');   // ⬅ add this
+const auditlogRoutes = require('./routes/auditlog.route');
 
 
 
@@ -49,7 +50,8 @@ app.use('/api/employees', employeeRoutes);
 app.use('/api/salary', salaryRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/attendance', attendanceRoutes);
-app.use('/api/contracts-docs', contractsRoutes);      
+app.use('/api/contracts-docs', contractsRoutes);
+app.use('/api/auditlogs',auditlogRoutes);
 
 app.get('/health', (_req, res) => res.json({ ok:true, status:'UP' }));
 app.use((req,res)=>res.status(404).json({ ok:false, message: 'Route not found'}));
