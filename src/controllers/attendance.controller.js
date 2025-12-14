@@ -1,10 +1,13 @@
 const pool = require('../config/db');
+const logEvent = require('../utils/event')
+const logAudit = require('../utils/audit')
 
 exports.getTimetables = async (req, res) => {
     try {
         const [timetables] = await pool.query('SELECT * FROM timetables ORDER BY created_at DESC');
         res.json({ ok: true, data: timetables });
     } catch (error) {
+        logEvent({level:'error', event_type:'GET_TIME_TABLE_ERROR', req:req, extra:{error} })
         res.status(500).json({ ok: false, message: error.message });
     }
 };
@@ -17,37 +20,50 @@ exports.createTimetable = async (req, res) => {
             'INSERT INTO timetables (name, check_in_start, check_in_end, check_out_start, check_out_end, grace_period_start, grace_period_end, type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
             [name, check_in_start, check_in_end, check_out_start, check_out_end, grace_period_start, grace_period_end, type]
         );
-        
+        logAudit({level:'info', action_type:'CREATE_TIME_TABLE', req, target_table:"timetables", target_id:result.insertId,status:"SUCCESS" ,after_state: result[0]});
         res.json({ ok: true, message: 'Timetable created successfully', id: result.insertId });
     } catch (error) {
+        logAudit({level:'error', action_type:'CREATE_TIME_TABLE', req, target_table:"timetables", status:"FAILURE", error_message:{error} })
         res.status(500).json({ ok: false, message: error.message });
     }
 };
 
 exports.updateTimetable = async (req, res) => {
+    const { id } = req.params;
     try {
-        const { id } = req.params;
+        const [beforeRows] = await pool.query('SELECT * FROM timetables WHERE id = ?', [id]);
+
+        if (beforeRows.length === 0) {
+            return res.status(404).json({ ok: false, message: "Timetable not found" });
+        }
+        const before_state = beforeRows[0];
+
         const { name, check_in_start, check_in_end, check_out_start, check_out_end, grace_period_start, grace_period_end, type } = req.body;
-        
+    
         await pool.query(
             'UPDATE timetables SET name = ?, check_in_start = ?, check_in_end = ?, check_out_start = ?, check_out_end = ?, grace_period_start = ?, grace_period_end = ?, type = ? WHERE id = ?',
             [name, check_in_start, check_in_end, check_out_start, check_out_end, grace_period_start, grace_period_end, type, id]
         );
-        
+
+        const [afterRows] = await pool.query('SELECT * FROM timetables WHERE id = ?',[id]);
+        const after_state = afterRows[0];
+        logAudit({level: 'info',action_type: 'UPDATE_TIME_TABLE',req,target_table: "timetables",target_id: id,status: "SUCCESS", before_state,after_state,});
         res.json({ ok: true, message: 'Timetable updated successfully' });
+
     } catch (error) {
+        logAudit({level: 'error', action_type: 'UPDATE_TIME_TABLE',req,target_table: "timetables",target_id: id,status: "FAILURE",error_message: error.message});
         res.status(500).json({ ok: false, message: error.message });
     }
 };
 
 exports.deleteTimetable = async (req, res) => {
+    const { id } = req.params;
     try {
-        const { id } = req.params;
-        
         await pool.query('DELETE FROM timetables WHERE id = ?', [id]);
-        
+        logAudit({level:'info', target_table:'timetables', target_id:id, req, status:"SUCCESS", action_type:"DELETE_TIMETABLE"})
         res.json({ ok: true, message: 'Timetable deleted successfully' });
     } catch (error) {
+        logAudit({level:error, action_type:"DELETE_TIMETABLE", req, target_table: "timetables", target_id:id, status:"FAILURE"})
         res.status(500).json({ ok: false, message: error.message });
     }
 };
@@ -65,9 +81,10 @@ exports.assignTimetable = async (req, res) => {
             'INSERT INTO employee_timetables (employee_id, timetable_id, effective_date) VALUES (?, ?, ?)',
             [employee_id, timetable_id, effective_date]
         );
-        
+        logAudit({level:'info', action_type:'ASSIGN_TIMETABLE', target_table:'employee_timetables', target_id:employee_id, after_state:{employee_id, timetable_id, effective_date}, req, status:"SUCCESS"})
         res.json({ ok: true, message: 'Timetable assigned successfully' });
     } catch (error) {
+        logAudit({level:'error', action_type:'ASSIGN_TIMETABLE', target_table:'employee_timetables', target_id:employee_id, error_message:{error}, req, status:"FAILURE"})
         res.status(500).json({ ok: false, message: error.message });
     }
 };
@@ -111,6 +128,7 @@ exports.getAttendanceRecords = async (req, res) => {
         const [records] = await pool.query(query, params);
         res.json({ ok: true, data: records });
     } catch (error) {
+        logEvent({level:'error', extra:{error}, event_type:"GET_ATTENDANCE_RECORDS_ERROR", req});
         res.status(500).json({ ok: false, message: error.message });
     }
 };
@@ -140,6 +158,7 @@ exports.getEmployeeAttendance = async (req, res) => {
         const [records] = await pool.query(query, params);
         res.json({ ok: true, data: records });
     } catch (error) {
+        logEvent({level:'error', event_type:'GET_EMPLOYEE_ATTENDANCE_ERROR', extra:{error}, req})
         res.status(500).json({ ok: false, message: error.message });
     }
 };
@@ -167,9 +186,10 @@ exports.checkIn = async (req, res) => {
                 [employee_id, date, check_in_time, notes]
             );
         }
-        
+        logAudit({level:'info', action_type:'CHECK_IN', target_table:'attendance_records', req, target_id:employee_id, status:"SUCCESS", after_state:{employee_id, date, check_in_time, notes}})
         res.json({ ok: true, message: 'Check-in recorded successfully' });
     } catch (error) {
+        logAudit({level:'error', action_type:'CHECK_IN', target_table:'attendance_records', req, target_id:employee_id, status:"FAILURE", error_message:{error}})
         res.status(500).json({ ok: false, message: error.message });
     }
 };
@@ -183,9 +203,10 @@ exports.checkOut = async (req, res) => {
             'UPDATE attendance_records SET check_out_time = ?, notes = COALESCE(?, notes) WHERE employee_id = ? AND date = ?',
             [check_out_time, notes, employee_id, date]
         );
-        
+        logAudit({level:'info', action_type:'CHECK_OUT', target_table:'attendance_records', req, target_id:employee_id, status:"SUCCESS", after_state:{employee_id, date, check_out_time, notes}})
         res.json({ ok: true, message: 'Check-out recorded successfully' });
     } catch (error) {
+        logAudit({level:'error', action_type:'CHECK_OUT', target_table:'attendance_records', req, target_id:employee_id, status:"FAILURE", error_message:{error}})
         res.status(500).json({ ok: false, message: error.message });
     }
 };
@@ -219,6 +240,7 @@ exports.getAdjustments = async (req, res) => {
         const [adjustments] = await pool.query(query, params);
         res.json({ ok: true, data: adjustments });
     } catch (error) {
+        logEvent({level:'error', event_type:"GET_ADJUSTMENTS_ERROR", req, extra:{error}})
         res.status(500).json({ ok: false, message: error.message });
     }
 };
@@ -261,8 +283,7 @@ exports.createAdjustment = async (req, res) => {
         ["Half Day", employee_id, adjustment_date]
       );
     }
-
-
+    logAudit({action_type:"CREATE_ADJUSTMENT", target_table:"attendance_adjustments", target_id: result.insertId, after_state: result[0], req, status:"SUCCESS"})
 
     res.json({
       ok: true,
@@ -270,6 +291,7 @@ exports.createAdjustment = async (req, res) => {
       id: result.insertId,
     });
   } catch (error) {
+    logAudit({action_type:"CREATE_ADJUSTMENT", status:"FAILURE", target_table:'attendance_adjustments', req, error_message:{error}});
     console.error(error);
     res.status(500).json({ ok: false, message: error.message });
   }
@@ -277,9 +299,12 @@ exports.createAdjustment = async (req, res) => {
 
 
 exports.approveAdjustment = async (req, res) => {
+     const { id } = req.params;
     try {
-        const { id } = req.params;
         const { status, decision_note } = req.body;
+
+        const [beforeRows] = await pool.query('SELECT * FROM attendance_adjustments WHERE id = ?',[id]);
+
         const approved_by = req.user.id; // Assuming you have user info in req.user
         
         await pool.query(
@@ -287,8 +312,11 @@ exports.approveAdjustment = async (req, res) => {
             [status, approved_by, decision_note, id]
         );
         
+        const [afterRows] = await pool.query('SELECT * FROM attendance_adjustments WHERE id = ?',[id]);
+        logAudit({level:info, action_type:"APPROVE_ADJUSTMENT", before_state:beforeRows[0], after_state:afterRows[0], status:"SUCCESS", req, target_table:"attendence_adjustment", target_id:id});
         res.json({ ok: true, message: `Adjustment ${status.toLowerCase()} successfully` });
     } catch (error) {
+        logAudit({level:'error', action_type:"APPROVE_ADJUSTMENT", status:"FAILURE", req,target_table:"attendence_adjustment", target_id:id })
         res.status(500).json({ ok: false, message: error.message });
     }
 };
@@ -340,6 +368,7 @@ exports.getAbsenceReport = async (req, res) => {
         const [records] = await pool.query(query, params);
         res.json({ ok: true, data: records });
     } catch (error) {
+        logEvent({event_type:"GET_ABSENCE_REPORT_ERROR",level:'error',extra:{error} ,req})
         res.status(500).json({ ok: false, message: error.message });
     }
 };

@@ -2,6 +2,7 @@ const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const logEvent = require('../utils/event');
+const { error } = require('winston');
 
 exports.login = async (req, res) => {
   const { email, password } = req.body;
@@ -12,13 +13,13 @@ exports.login = async (req, res) => {
   const user = rows[0];
 
     if (!user) {
-      logEvent({ level: 'error', event_type: "LOGIN_FAILURE", email, req });
+      logEvent({ level: 'error', event_type: "LOGIN_FAILURE", req, extra:{ error:"Invalid credentials"} });
       return res.status(401).json({ ok: false, message: 'Invalid credentials' });
     }
 
     const ok = await bcrypt.compare(password, user.password_hash);
     if (!ok) {
-      logEvent({ level: 'error', event_type: "LOGIN_FAILURE", user_id: user.id, email, req });
+      logEvent({ level: 'error', event_type: "LOGIN_FAILURE", user_id: user.id, req, extra:{ error:"Invalid credentials"} });
       return res.status(401).json({ ok: false, message: 'Invalid credentials' });
     }
 
@@ -28,7 +29,7 @@ exports.login = async (req, res) => {
       { expiresIn: process.env.JWT_EXPIRES_IN || '8h' }
     );
 
-    logEvent({ level: 'info', event_type: "LOGIN_SUCCESS", user_id: user.id, email, req });
+    logEvent({ level: 'info', event_type: "LOGIN_SUCCESS", user_id: user.id, req });
 
 
   res.json({
@@ -39,7 +40,7 @@ exports.login = async (req, res) => {
   } catch (err) {
     console.error(err);
 
-    logEvent({ level: 'error', event_type: "LOGIN_ERROR", user_id: user?.id, email, req, extra: { error_message: err.message } });
+    logEvent({ level: 'error', event_type: "LOGIN_ERROR", user_id: user?.id, req, extra: { error_message: err.message } });
     return res.status(500).json({ ok: false, message: 'Server error' });
   }
 };

@@ -30,7 +30,7 @@ const createDailyLogger = ({ name, filename, maxFiles = '30d' }) => {
     zippedArchive: true,
     maxSize: '20m',
     maxFiles,
-    level: 'info',
+    level: 'silly',
     handleExceptions: true,
     format: format.combine(
       format.timestamp(),
@@ -40,7 +40,7 @@ const createDailyLogger = ({ name, filename, maxFiles = '30d' }) => {
   });
 
   return createLogger({
-    level: 'info',
+    level: 'silly',
     format: format.combine(
       format.timestamp(),
       format.errors({ stack: true }),

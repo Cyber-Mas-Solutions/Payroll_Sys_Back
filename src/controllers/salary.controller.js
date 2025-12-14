@@ -43,14 +43,7 @@ const getGrades = async (_req, res) => {
     return res.json(rows);
   } catch (err) {
     console.error(err);
-    logEvent({
-      level: 'error', event_type: "GET_GRADES",
-      user_id: req.user?.id || null,
-      event_details: {},
-      status: "FAILURE",
-      error_message: err.message,
-      req
-    })
+    logEvent({ level: 'error', event_type: "GET_GRADES_ERROR",  user_id: _req.user?.id || null, _req, extra: {err}   })
     return res.json(GRADES_FALLBACK);
   }
 }
@@ -94,16 +87,7 @@ const getOvertimeRulesByGrade = async (req, res) => {
     res.json(rows[0] || null);
   } catch (err) {
     console.error('getOvertimeRulesByGrade error:', err);
-    logEvent({
-      level: 'error', event_type: "GET_OVER_TIME_RULES_BY_GRADE_ERROR",
-      user_id: user?.id || null,
-      event_details: {
-        email,
-        ip: ip_address,
-        error: err
-      },
-      error_message: err.message
-    })
+    logEvent({ level: 'error', event_type: "GET_OVER_TIME_RULES_BY_GRADE_ERROR", user_id: user?.id || null,  extra : {err}, req })
     res.status(500).json({ message: 'Failed to fetch overtime rules' });
   }
 };
@@ -126,12 +110,12 @@ const upsertOvertimeRule = async (req, res) => {
          created_at = NOW()`
       , [grade_id, ot_rate, max_ot_hours]
     );
-    logAudit({
+    logAudit({ level:"info",
       user_id: req.user.id,
       action_type: "UPSERT_OVERTIME_RULE",
       target_table: "overtime_rule",
       target_id: grade_id,
-      before_state: null,   // we skip state diff here
+      before_state: null,
       after_state: { grade_id, ot_rate, max_ot_hours },
       req,
       status: "SUCCESS"
@@ -141,7 +125,7 @@ const upsertOvertimeRule = async (req, res) => {
   } catch (err) {
     console.error('upsertOvertimeRules error:', err);
 
-    logAudit({
+    logAudit({level:'error',
       user_id: req.user.id,
       action_type: "UPSERT_OVERTIME_RULE",
       target_table: "overtime_rule",
@@ -175,6 +159,7 @@ const searchEmployees = async (req, res) => {
     res.json(rows);
   } catch (err) {
     console.error('searchEmployees error:', err);
+    logEvent({level:'error', event_type:"SEARCH_EMPLOYEE_ERROR", user_id:req.user.id, req, extra:{err}})
     res.status(500).json({ message: 'Failed to search employees' });
   }
 };
@@ -225,25 +210,29 @@ const createOvertimeAdjustment = async (req, res) => {
     );
 
     // AUDIT LOG (important)
-    logAudit({
+    logAudit({level:"info",
       action: "ADD_OVERTIME_ADJUSTMENT",
       target_table: "overtime_adjustments",
       target_id: result.insertId,
       user_id: req.user?.id || null,
-      record_id: employee_id,
-      change_details: {
-        employee_id,
-        grade_id,
-        ot_hours,
-        ot_rate,
-        adjustment_reason
-      }
+      before_state:null,
+      after_state: result,
+      req,
+      status:"SUCCES"
     });
-
     return res.json({ ok: true, message: 'Overtime adjustment saved' });
 
   } catch (err) {
     console.error('createOvertimeAdjustment error:', err);
+    logAudit({ level:'error',
+      action: "ADD_OVERTIME_ADJUSTMENT",
+      target_table: "overtime_adjustments",
+      target_id: null,
+      user_id: req.user?.id || null,
+      req,
+      status:"FAILURE",
+      error_message: err
+    })
     res.status(500).json({ ok: false, message: 'Failed to save overtime adjustment' });
   }
 };
@@ -285,12 +274,7 @@ const listOvertimeAdjustmentsByGrade = async (req, res) => {
     return res.json(rows);
   } catch (err) {
     console.error('listOvertimeAdjustmentsByGrade error:', err);
-    logEvent({
-      level: 'error', event_type: "GET_OVER_TIME_ADJUSTMENT_BY_GRADE",
-      user_id: req.user.id,
-      error_message: err.message,
-      event_details: { err }
-    })
+    logEvent({ level: 'error', event_type: "GET_OVER_TIME_ADJUSTMENT_BY_GRADE",user_id: req.user.id,req,extra: {err},})
     res.status(500).json({ ok: false, message: 'Failed to load overtime entries' });
   }
 };
@@ -331,12 +315,7 @@ const listOvertimeAdjustmentsByEmployee = async (req, res) => {
     return res.json(rows);
   } catch (err) {
     console.error('listOvertimeAdjustmentsByEmployee error:', err);
-    logEvent({
-      level: 'error', event_type: "GET_OVER_TIME_ADJUSTMENT_BY_EMPLOYEE",
-      user_id: req.user.id,
-      error_message: err.message,
-      event_details: { err }
-    })
+    logEvent({ level: 'error', event_type: "GET_OVER_TIME_ADJUSTMENT_BY_EMPLOYEE",user_id: req.user.id,req,extra:{ err}})
     res.status(500).json({ ok: false, message: 'Failed to fetch employee OT adjustments' });
   }
 };
@@ -394,12 +373,7 @@ const searchEmployeesAdvanced = async (req, res) => {
     res.json({ ok:true, data: rows });
   } catch (err) {
     console.error('searchEmployeesAdvanced error:', err);
-    logEvent({
-      level: 'error', event_type: "SEARCH_EMPLOYEE_ADVANCES",
-      user_id: req.user.id,
-      error_message: err.message,
-      event_details: { err }
-    })
+    logEvent({ level: 'error', event_type: "SEARCH_EMPLOYEE_ADVANCES_ERROR",  user_id: req.user.id, req ,extra:{ err }  })
     res.status(500).json({ ok:false, message:'Failed to search employees' });
   }
 };
@@ -414,12 +388,7 @@ const listDepartments = async (_req, res) => {
     res.json({ ok:true, data: rows });
   } catch (err) {
     console.error('listDepartments error:', err);
-    logEvent({
-      level: 'info', event_type: "LIST_DEPARTMENTS",
-      user_id: _req.user.id,
-      error_message: err.message,
-      event_details: { err }
-    })
+    logEvent({ level: 'info', event_type: "LIST_DEPARTMENTS",  user_id: _req.user.id,  _req ,extra:{ err } })
     res.status(500).json({ ok:false, message:'Failed to fetch departments' });
   }
 };
@@ -475,12 +444,7 @@ const previewCompensation = async (req, res) => {
     });
   } catch (err) {
     console.error('previewCompensation error:', err);
-    logEvent({
-      level: 'error', event_type: "PREVIEW_COMPENSATION",
-      user_id: req.user.id,
-      error_message: err.message,
-      event_details: { err }
-    })
+    logEvent({ level: 'error', event_type: "PREVIEW_COMPENSATION",  user_id: req.user.id,  req ,extra:{ err } })
     res.status(500).json({ ok:false, message:'Failed to preview compensation' });
   }
 };
@@ -581,20 +545,28 @@ const applyCompensation = async (req, res) => {
       await conn.query(auditSql, auditParams);
     }
 
+    logAudit({ level: 'info',
+      user_id: req.user?.id || null,
+      action_type: 'COMPENSATION_APPLY',
+      target_table: 'compensation_batch',
+      target_id: null,
+      status: 'SUCCESS',
+      req,
+    });
     await conn.commit();
     res.json({ ok:true, message:`Applied ${type} to ${employee_ids.length} employee(s)` });
 
   } catch (err) {
     await (conn?.rollback?.());
     console.error('applyCompensation error:', err);
-    logAudit({
+    logAudit({ level:'error',
       user_id: req.user?.id || null,
       action_type: 'COMPENSATION_APPLY',
       target_table: 'compensation_batch',
       target_id: null,
-      status: 'FAILED',
+      status: 'FAILURE',
+      req,
       error_message: err.message,
-      after_state: { ...req.body }
     });
     res.status(500).json({ ok:false, message:'Failed to apply compensation' });
   } finally {
@@ -639,12 +611,7 @@ const listAllowances = async (req, res) => {
 
   } catch (err) {
     console.error(err);
-    logEvent({
-      level: 'error', event_type: "GET_ALLOWANCE_LIST_FAILED",
-      user_id: req.user?.id,
-      severity: "ERROR",
-      event_details: { error: err.message }
-    })
+    logEvent({ level: 'error', event_type: "GET_ALLOWANCE_LIST_FAILED", user_id: req.user?.id, req, extra : { error: err.message }})
     res.status(500).json({ ok: false, message: 'Failed to load allowances' });
   }
 };
@@ -663,11 +630,11 @@ const listOvertime = async (req, res) => {
     res.json({ ok: true, data: rows });
   } catch (err) {
     console.error(err);
-    logEvent({
-      level: 'error', event_type: "GET_OVERTIME_LIST_FAILED",
+    logEvent({ level: 'error', 
+      event_type: "GET_OVERTIME_LIST_FAILED",
       user_id: req.user?.id,
-      severity: "ERROR",
-      event_details: { error: err.message }
+      req,
+      extra: { error: err.message }
     })
     res.status(500).json({ ok: false, message: 'Failed to load overtime/adjustments' });
   }
@@ -700,11 +667,11 @@ const listDeductions = async (req, res) => {
     res.json({ ok: true, data: rows });
   } catch (err) {
     console.error(err);
-    logEvent({
-      level: 'error', event_type: "GET_DEDUCTIONS_LIST_FAILED",
+    logEvent({level: 'error',
+      event_type: "GET_DEDUCTIONS_LIST_FAILED",
       user_id: req.user?.id,
-      severity: "ERROR",
-      event_details: { error: err.message }
+      req,
+      extra: { error: err.message }
     })
     res.status(500).json({ ok: false, message: 'Failed to load deductions' });
   }
@@ -739,22 +706,13 @@ const createDeduction = async (req, res) => {
        VALUES (?,?,?,?,?,?,?,?,NOW(),NOW())`,
       [employee_id, name, type, basis, percent ?? null, amount ?? null, effective_date, status]
     );
-    logAudit({
+    logAudit({ level:'info',
       user_id: req.user.id,
       action_type: "CREATE_DEDUCTION",
       target_table: "deductions",
       target_id: result.insertId,
       before_state: null,
-      after_state: {
-        employee_id,
-        name,
-        type,
-        basis,
-        percent: percent ?? null,
-        amount: amount ?? null,
-        effective_date,
-        status
-      },
+      after_state: result,
       req,
       status: "SUCCESS"
     });
@@ -762,15 +720,16 @@ const createDeduction = async (req, res) => {
     res.json({ ok: true, id: result.insertId, message: 'Deduction saved' });
   } catch (err) {
     console.error(err);
-    logAudit({
+    logAudit({ level:'error',
       user_id: req.user?.id || null,
       action_type: "CREATE_DEDUCTION",
       target_table: "deductions",
       target_id: null,
       before_state: null,
-      after_state: req.body,
+      after_state: null,
       req,
-      status: "FAILURE"
+      status: "FAILURE",
+      error_message: err.message
     })
 
     res.status(500).json({ ok: false, message: 'Failed to save deduction' });
@@ -790,11 +749,11 @@ const getDeductionById = async (req, res) => {
     res.json({ ok: true, data: row });
   } catch (err) {
     console.error(err);
-    logEvent({
-      level: 'error', event_type: "GET_DEDUCTION_BYID",
+    logEvent({ level: 'error', 
+      event_type: "GET_DEDUCTION_BY_ID",
       user_id: req.user.id,
-      error_message: err.message,
-      event_details: { err }
+      req,
+      extra: { err }
     })
     res.status(500).json({ ok: false, message: 'Failed to load deduction' });
   }
@@ -843,7 +802,7 @@ const updateDeduction = async (req, res) => {
 
     const [[after]] = await pool.query(`SELECT * FROM deductions WHERE id = ?`, [id]);
 
-    logAudit({
+    logAudit({ level:'info',
       user_id: req.user.id,
       action_type: "UPDATE_DEDUCTION",
       target_table: "deductions",
@@ -859,15 +818,16 @@ const updateDeduction = async (req, res) => {
     console.error(err);
 
     try {
-      logAudit({
+      logAudit({ level:'error',
         user_id: req.user?.id || null,
         action_type: "UPDATE_DEDUCTION",
         target_table: "deductions",
         target_id: req.params.id,
         before_state: null,
-        after_state: req.body,
+        after_state: null,
         req,
-        status: "FAILURE"
+        status: "FAILURE",
+        error_message: err.message
       });
     } catch (e) { }
 
@@ -886,7 +846,7 @@ const deleteDeduction = async (req, res) => {
 
     await pool.query('DELETE FROM deductions WHERE id=?', [id]);
 
-    logAudit({
+    logAudit({ level:'info',
       user_id: req.user.id,
       action_type: "DELETE_DEDUCTION",
       target_table: "deductions",
@@ -900,7 +860,7 @@ const deleteDeduction = async (req, res) => {
     res.json({ ok: true, message: 'Deduction deleted' });
   } catch (err) {
     console.error(err);
-    logAudit({
+    logAudit({ level:'error',
       user_id: req.user?.id || null,
       action_type: "DELETE_DEDUCTION",
       target_table: "deductions",
@@ -908,7 +868,8 @@ const deleteDeduction = async (req, res) => {
       before_state: null,
       after_state: null,
       req,
-      status: "FAILURE"
+      status: "FAILURE",
+      error_message: err.message
     });
 
     res.status(500).json({ ok: false, message: 'Failed to delete deduction' });
@@ -937,11 +898,11 @@ const getBasicSalary = async (req, res) => {
     res.json({ basic_salary: row?.basic_salary || 0 });
   } catch (err) {
     console.error('getBasicSalary error:', err);
-    logEvent({
-      level: 'error', event_type: "GET_OVERTIME_LIST_FAILED",
+    logEvent({ level: 'error',
+      event_type: "GET_OVERTIME_LIST_FAILED",
       user_id: req.user?.id || null,
-      severity: "ERROR",
-      event_details: { error: err.message }
+      req,
+      extra: { error: err.message }
     })
     res.status(500).json({ ok: false, message: 'Failed to fetch basic salary' });
   }
@@ -991,42 +952,33 @@ const addAllowance = async (req, res) => {
 
     const allowanceId = result.insertId;
 
-    logAudit({
+    logAudit({ level: 'info',
       user_id: req.user.id,
-      action_type: "CREATE",
+      action_type: "CREATE_ALLOWANCE",
       target_table: "allowances",
       target_id: allowanceId,
       before_state: null,
-      after_state: {
-        employee_id,
-        description,
-        category,
-        amount,
-        taxable: Number(taxable) ? 1 : 0,
-        frequency,
-        effective_from,
-        effective_to,
-        status
-      },
+      after_state: result,
       req,
       status: "SUCCESS"
-    }).catch(console.error);
+    })
 
     res.json({ ok: true, message: 'Allowance added' });
 
   } catch (err) {
     console.error(err);
 
-    logAudit({
+    logAudit({ level:'error',
       user_id: req.user?.id,
-      action_type: "CREATE",
+      action_type: "CREATE_ALLOWANCE",
       target_table: "allowances",
       target_id: null,
       before_state: null,
       after_state: req.body,
       req,
-      status: "FAILURE"
-    }).catch(console.error);
+      status: "FAILURE",
+      error_message: err.message
+    })
 
     res.status(500).json({ ok: false, message: 'Failed to add allowance' });
   }
@@ -1061,6 +1013,12 @@ const getAllowanceById = async (req, res) => {
     res.json({ ok: true, data: allowance });
   } catch (err) {
     console.error('getAllowanceById error:', err);
+    logEvent({level:'error',
+      event_type : "GET_ALLOWANCE_BY_ID_ERROR",
+      user_id: req.user.id,
+      req,
+      extra : {err}
+    })
     res.status(500).json({ ok: false, message: 'Failed to fetch allowance' });
   }
 };
@@ -1109,17 +1067,31 @@ const updateAllowance = async (req, res) => {
       return res.status(404).json({ ok: false, message: 'Allowance not found' });
     }
 
-    logAudit({
+    logAudit({ level:'info',
       user_id: req.user.id,
       action_type: "UPDATE_ALLOWANCE",
       target_table: "allowances",
       target_id: result.insertId,
-      description: `Allowance updated (id=${id}, employee_id=${employee_id}, amount=${amount})`
+      status:"SUCCESS",
+      before_state:null,
+      after_state: result,
+      req
     });
 
     res.json({ ok: true, message: 'Allowance updated successfully' });
   } catch (err) {
     console.error('updateAllowance error:', err);
+     logAudit({ level:'error',
+      user_id: req.user.id,
+      action_type: "UPDATE_ALLOWANCE",
+      target_table: "allowances",
+      target_id: null,
+      status:"FAILURE",
+      before_state:null,
+      after_state: null,
+      error_message: err.message,
+      req
+    });
     res.status(500).json({ ok: false, message: 'Failed to update allowance' });
   }
 };
@@ -1135,7 +1107,7 @@ const deleteAllowance = async (req, res) => {
 
     const [result] = await pool.query('DELETE FROM allowances WHERE id = ?', [id]);
     // Add audit log
-    logAudit({
+    logAudit({ level:'info',
       user_id: req.user.id,
       action_type: "DELETE_ALLOWANCE",
       target_table: "allowances",
@@ -1150,7 +1122,7 @@ const deleteAllowance = async (req, res) => {
     console.error('deleteAllowance error:', err);
 
     if (req.user) {
-      logAudit({
+      logAudit({ level: 'error',
         user_id: req.user.id,
         action_type: "DELETE_ALLOWANCE",
         target_table: "allowances",
@@ -1158,7 +1130,8 @@ const deleteAllowance = async (req, res) => {
         before_state: null,
         after_state: null,
         req,
-        status: "FAILURE"
+        status: "FAILURE",
+        error_message : err.message
       });
     }
 
@@ -1173,11 +1146,44 @@ const addBonus = async (req, res) => {
   if (!employee_id || !amount || !effective_date)
     return res.status(400).json({ ok: false, message: 'employee_id, amount, effective_date required' });
 
-  await pool.query(
-    'INSERT INTO bonuses (employee_id, amount, reason, effective_date, created_by) VALUES (?,?,?,?,?)',
-    [employee_id, amount, reason || null, effective_date, req.user?.id || null]
-  );
+  try {
+    const [insert] = await conn.query(
+      'INSERT INTO bonuses (employee_id, amount, reason, effective_date, created_by) VALUES (?,?,?,?,?)',
+      [employee_id, amount, reason || null, effective_date, req.user?.id]
+    );
+
+    await logAudit({
+      level: 'info',
+      user_id: req.user.id,
+      action_type: 'ADD_BONUS',
+      target_table: 'bonuses',
+      target_id: insert.insertId,
+      before_state: null,
+      after_state: { employee_id, amount, reason, effective_date },
+      req,
+      status: 'SUCCESS'
+    });
+
   res.json({ ok: true, message: 'Bonus added' });
+
+  } catch (err) {
+    await logAudit({
+      level: 'error',
+      user_id: req.user?.id || null,
+      action_type: 'ADD_BONUS',
+      target_table: 'bonuses',
+      target_id: null,
+      before_state: null,
+      after_state: null,
+      req,
+      status: 'FAILURE',
+      error_message: err.message
+    });
+
+    res.status(500).json({ ok: false, message: 'Failed to add bonus' });
+  } finally {
+    conn.release();
+  }
 };
 
 /* ===================== EARNINGS GRID ===================== */
@@ -1263,16 +1269,7 @@ const listEarnings = async (req, res) => {
 
   } catch (err) {
     console.error('listEarnings error:', err);
-    logEvent({
-      level: 'error', event_type: "GET_EARNING_LIST_FAILED",
-      user_id: req.user?.id || null,
-      severity: "ERROR",
-      event_details: {
-        month: req.query.month || 'all',
-        year: req.query.year || 'all',
-        error: err.message
-      }
-    })
+    logEvent({ level: 'error', event_type: "GET_EARNING_LIST_FAILED", user_id: req.user?.id || null, req, extra : {err}})
 
     res.status(500).json({ ok: false, message: 'Failed to fetch earnings' });
   }
@@ -1443,11 +1440,7 @@ const runPayrollForMonth = async (req, res) => {
   } catch (e) {
     await conn.rollback();
     console.error(e);
-    logEvent({
-      level: 'error', event_type: "RUN_PAYROLL_FAILED",
-      user_id: req.user?.id || null,
-      severity: "ERROR",
-      event_details: { error: e.message, month, year }
+    logEvent({ level: 'error', event_type: "RUN_PAYROLL_FAILED", user_id: req.user?.id || null, req, extra: { error: e.message, month, year }
     })
     return res.status(500).json({ ok: false, message: 'Failed to run payroll' });
   } finally {
@@ -1522,12 +1515,14 @@ const generatePayslip = async (req, res) => {
     [employee_id, month, year, gross, dedTotal, net]
   );
 
-    logAudit({
+    logAudit({ level:'info',
       user_id: req.user?.id || null,
       action_type: 'GENERATE_PAYSLIP',
       target_table: 'payroll_cycles',
       target_id: payrollResult.insertId,
       after_state: { employee_id, month, year, gross, total_deductions: dedTotal, net },
+      status:"SUCCESS",
+      req,
     });
 
   const doc = new PDFDocument();
@@ -1559,12 +1554,7 @@ const generatePayslip = async (req, res) => {
 
   } catch (err) {
     console.error('generatePayslip error:', err);
-    logEvent({
-      level: 'error', event_type: "GENERATE_PAYSLIP_FAILED",
-      user_id: req.user?.id || null,
-      severity: "ERROR",
-      event_details: { error: err.message, query: req.query }
-    })
+    logEvent({ level: 'error', event_type: "GENERATE_PAYSLIP_FAILED", user_id: req.user?.id || null, req, extra: { error: err.message, query: req.query }})
     res.status(500).json({ ok: false, message: 'Failed to generate payslip' });
   }
 };
