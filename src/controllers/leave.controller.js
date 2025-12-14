@@ -15,7 +15,7 @@ function calculateFullDays(start, end) {
 }
 
 function computeDurationHours(startDate, endDate, startTime, endTime) {
-  // Full-day default (8 hours per day) unless times are provided
+  // 💡 FIX: Default full day duration changed from 8 to 9 hours based on requirement.
   const s = dayjs(`${startDate}${startTime ? ' ' + startTime : ' 09:00'}`);
   const e = dayjs(`${endDate}${endTime ? ' ' + endTime : ' 18:00'}`);
 
@@ -27,7 +27,7 @@ function computeDurationHours(startDate, endDate, startTime, endTime) {
 exports.createRequest = async (req, res) => {
   const {
     employee_id, leave_type_id, start_date, end_date,
-    start_time, end_time, reason
+    start_time, end_time, reason, duration_hours: manual_duration_hours // 💡 CHANGE 2: Capture explicit duration (4.0 for half-day) from FE
   } = req.body;
 
   const [empRows] = await pool.query(
@@ -37,7 +37,14 @@ exports.createRequest = async (req, res) => {
   const emp = empRows[0];
   if (!emp) return res.status(404).json({ ok:false, message: 'Employee not found' });
 
-  const duration_hours = computeDurationHours(start_date, end_date, start_time, end_time);
+  // 💡 CHANGE 2: Prioritize manual duration provided by frontend (e.g., 4.0 for half-day)
+  let duration_hours = manual_duration_hours;
+  
+  if (duration_hours === null || duration_hours === undefined) {
+      // Fallback calculation for date ranges (assumes 9hr blocks)
+      duration_hours = computeDurationHours(start_date, end_date, start_time, end_time); 
+  }
+  
   const attachment_path = req.file ? req.file.path.replace(/\\/g,'/') : null;
 
   const [result] = await pool.query(
@@ -127,11 +134,14 @@ exports.decideRequest = async (req, res) => {
   // Update leave_balances on approve
   if (action === 'APPROVE') {
     const year = dayjs(lr.start_date).year();
+    // 💡 CHANGE 2: Convert hours to days using 9 hours as a full day.
+    const daysUsed = (Number(lr.duration_hours) / 9.0).toFixed(2); 
+
     await pool.query(
       `INSERT INTO leave_balances (employee_id, leave_type_id, year, entitled_days, used_days)
        VALUES (?,?,?,?,?)
        ON DUPLICATE KEY UPDATE used_days = used_days + VALUES(used_days)`,
-      [lr.employee_id, lr.leave_type_id, year, 0, lr.duration_hours / 8]  // convert hours to days if you prefer
+      [lr.employee_id, lr.leave_type_id, year, 0, daysUsed]
     );
   }
 
@@ -202,7 +212,7 @@ exports.calendarFeed = async (req, res) => {
 };
 
 
-// 🔹 Create / update a restriction for a date
+// 隼 Create / update a restriction for a date
 exports.saveRestriction = async (req, res) => {
   try {
     const { date, type, reason } = req.body;
@@ -236,7 +246,7 @@ exports.saveRestriction = async (req, res) => {
   }
 };
 
-// 🔹 Delete restriction by date or id
+// 隼 Delete restriction by date or id
 exports.deleteRestriction = async (req, res) => {
   try {
     const { id } = req.params;    // /calendar/restrictions/:id
@@ -265,7 +275,6 @@ exports.deleteRestriction = async (req, res) => {
     res.status(500).json({ ok: false, message: err.message });
   }
 };
-
 
 
 exports.summary = async (req, res) => {
@@ -297,7 +306,7 @@ exports.summary = async (req, res) => {
   });
 };
 
-// 🔹 NEW: Employee leave balances for EmployeeLeaves.jsx
+// 隼 NEW: Employee leave balances for EmployeeLeaves.jsx (Overview Tab)
 exports.employeeBalances = async (req, res) => {
   try {
     const year = parseInt(req.query.year || String(dayjs().year()), 10);
@@ -326,21 +335,29 @@ exports.employeeBalances = async (req, res) => {
           e.employee_code,
           e.full_name,
           COALESCE(d.name, e.department_name) AS department_name,
-          SUM(CASE WHEN lt.name LIKE '%Annual%' THEN lb.used_days ELSE 0 END) AS annualUsed,
-          SUM(CASE WHEN lt.name LIKE '%Annual%' THEN lb.entitled_days ELSE 0 END) AS annualTotal,
-          SUM(CASE WHEN lt.name LIKE '%Casual%' THEN lb.used_days ELSE 0 END) AS casualUsed,
-          SUM(CASE WHEN lt.name LIKE '%Casual%' THEN lb.entitled_days ELSE 0 END) AS casualTotal
+          lr.annual_limit AS annualEntitlement,     -- 💡 CHANGE 3: Entitlement from Grade Rule
+          lr.medical_limit AS medicalEntitlement,    -- 💡 CHANGE 3: Entitlement from Grade Rule (Medical)
+          
+          -- Sum used days for 'Personal' leave type (ID 1), derived from hours/9
+          SUM(CASE WHEN lt.name = 'Personal' AND lb.year = ? THEN lb.used_days ELSE 0 END) AS annualUsed,
+          
+          -- Sum used days for 'Sick' leave type (ID 2), derived from hours/9
+          SUM(CASE WHEN lt.name = 'Sick' AND lb.year = ? THEN lb.used_days ELSE 0 END) AS medicalUsed
+          
        FROM employees e
        LEFT JOIN departments d ON d.id = e.department_id
+       LEFT JOIN leave_rules lr ON lr.grade_id = e.grade_id  -- 💡 CHANGE 3: Join with leave_rules for entitlements
        LEFT JOIN leave_balances lb
          ON lb.employee_id = e.id AND lb.year = ?
        LEFT JOIN leave_types lt
          ON lt.id = lb.leave_type_id
        ${where}
-       GROUP BY e.id, e.employee_code, e.full_name, d.name, e.department_name
+       GROUP BY 
+         e.id, e.employee_code, e.full_name, d.name, e.department_name, 
+         lr.annual_limit, lr.medical_limit
        ORDER BY e.full_name ASC
        LIMIT ? OFFSET ?`,
-      [year, ...params, pageSize, offset]
+      [year, year, year, ...params, pageSize, offset] // Pass year for the SUM CASE
     );
 
     const [countRows] = await pool.query(
@@ -356,11 +373,17 @@ exports.employeeBalances = async (req, res) => {
       employee_code: r.employee_code,
       name: r.full_name,
       department: r.department_name || 'N/A',
+      
+      // Annual Leave (using rule limits)
       annualUsed: Number(r.annualUsed || 0),
-      annualTotal: Number(r.annualTotal || 0),
-      casualUsed: Number(r.casualUsed || 0),
-      casualTotal: Number(r.casualTotal || 0),
-      halfDay1: '0 / 0',
+      annualTotal: Number(r.annualEntitlement || 0),
+      
+      // Medical Leave (using rule limits) 💡 CHANGE 3: Renamed fields
+      medicalUsed: Number(r.medicalUsed || 0),
+      medicalTotal: Number(r.medicalEntitlement || 0),
+
+      // Half day columns remain static / placeholder
+      halfDay1: '0 / 0', 
       halfDay2: '0 / 0',
     }));
 
@@ -372,7 +395,7 @@ exports.employeeBalances = async (req, res) => {
 };
 
 // =========================================================================
-// 🔹 NEW: Leave Rules (Grade-Based)
+// 隼 Leave Rules (getRules, saveRule) are unchanged as the API path is correct
 // =========================================================================
 
 /**
