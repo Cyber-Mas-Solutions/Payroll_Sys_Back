@@ -67,6 +67,14 @@ router.put('/etf-epf/:id', etfEpfCtrl.updateEtfEpfRecord);
 router.delete('/etf-epf/:id', etfEpfCtrl.deleteEtfEpfRecord);
 router.post('/etf-epf/calculate', etfEpfCtrl.calculateContributions);
 
+// NEW ROUTE: Process deduction calculation and insertion
+router.post('/unpaid-leaves/:id/process', ctrl.processUnpaidLeaveDeduction);
+router.post('/unpaid-leaves/:id/process', ctrl.processUnpaidLeaveDeduction); 
+// Manual CUD operations (Using placeholder functions defined in controller)
+router.post('/unpaid-leaves', ctrl.createUnpaidLeave); 
+router.put('/unpaid-leaves/:id', ctrl.updateUnpaidLeave); 
+router.delete('/unpaid-leaves/:id', ctrl.deleteUnpaidLeave);
+
 
 
 // month summary / run payroll

@@ -37,12 +37,8 @@ app.set('trust proxy', true)
 // serve /uploads
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-app.use('/api/auth', authRoutes);
-app.use('/api/employees', employeeRoutes);
-app.use('/api/salary', salaryRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/reports', reportRoutes);
-app.use('/api/attendance', attendanceRoutes);
 app.use('/api/leaves', leaveRoutes);
 
 app.use('/api/auth', authRoutes);

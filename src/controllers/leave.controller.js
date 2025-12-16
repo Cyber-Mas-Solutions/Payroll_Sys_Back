@@ -2,50 +2,55 @@
 const pool = require('../config/db');
 const dayjs = require('dayjs');
 
-// Helper to determine the number of full days between two dates (inclusive)
-// NOTE: This assumes whole days and ignores weekends/holidays for simplicity 
-// in this file, as holiday/weekend logic should be centralized elsewhere.
+// Constants based on user requirements
+const WORK_HOURS_PER_DAY = 9.0;
+const LEAVE_TYPE_ANNUAL_ID = 1; // Personal (Annual)
+const LEAVE_TYPE_MEDICAL_ID = 2; // Sick (Medical)
+
+// Helper functions (Unchanged)
 function calculateFullDays(start, end) {
     if (!start || !end) return 0;
     const s = dayjs(start);
     const e = dayjs(end);
     if (s.isAfter(e)) return 0;
-    // Difference in days + 1 (to be inclusive)
     return e.diff(s, 'day') + 1; 
 }
 
 function computeDurationHours(startDate, endDate, startTime, endTime) {
-  // 💡 FIX: Default full day duration changed from 8 to 9 hours based on requirement.
+  // Using 9 hours as the full day standard
   const s = dayjs(`${startDate}${startTime ? ' ' + startTime : ' 09:00'}`);
   const e = dayjs(`${endDate}${endTime ? ' ' + endTime : ' 18:00'}`);
 
-  // Prevent negatives
   const h = Math.max(0, e.diff(s, 'minute')) / 60;
   return Number(h.toFixed(2));
 }
 
+// -----------------------------------------------------------------------------------
+// CREATE REQUEST 
+// -----------------------------------------------------------------------------------
+// -----------------------------------------------------------------------------------
+// CREATE REQUEST 
+// -----------------------------------------------------------------------------------
 exports.createRequest = async (req, res) => {
-  const {
-    employee_id, leave_type_id, start_date, end_date,
-    start_time, end_time, reason, duration_hours: manual_duration_hours // 💡 CHANGE 2: Capture explicit duration (4.0 for half-day) from FE
-  } = req.body;
+  const {
+    employee_id, leave_type_id, start_date, end_date,
+    start_time, end_time, reason, duration_hours: manual_duration_hours // Capture from FE
+  } = req.body;
 
-  const [empRows] = await pool.query(
-    'SELECT id, department_id FROM employees WHERE id = ?',
-    [employee_id]
-  );
-  const emp = empRows[0];
-  if (!emp) return res.status(404).json({ ok:false, message: 'Employee not found' });
+  const [empRows] = await pool.query(
+    'SELECT id, department_id FROM employees WHERE id = ?',
+    [employee_id]
+  );
+  const emp = empRows[0];
+  if (!emp) return res.status(404).json({ ok:false, message: 'Employee not found' });
 
-  // 💡 CHANGE 2: Prioritize manual duration provided by frontend (e.g., 4.0 for half-day)
-  let duration_hours = manual_duration_hours;
-  
-  if (duration_hours === null || duration_hours === undefined) {
-      // Fallback calculation for date ranges (assumes 9hr blocks)
-      duration_hours = computeDurationHours(start_date, end_date, start_time, end_time); 
-  }
-  
-  const attachment_path = req.file ? req.file.path.replace(/\\/g,'/') : null;
+  // FIX: Check if manual_duration_hours is provided AND not null. 
+  // If it is null (like for multi-day requests from FE), calculate it.
+  let duration_hours = (manual_duration_hours !== null && manual_duration_hours !== undefined) 
+    ? manual_duration_hours 
+    : computeDurationHours(start_date, end_date, start_time, end_time);
+    
+  const attachment_path = req.file ? req.file.path.replace(/\\/g,'/') : null;
 
   const [result] = await pool.query(
     `INSERT INTO leave_requests
@@ -104,48 +109,116 @@ exports.listRequests = async (req, res) => {
   res.json({ ok:true, page, pageSize, total: count, data: rows });
 };
 
+// -----------------------------------------------------------------------------------
+// DECIDE REQUEST (CRITICAL UNPAID LEAVE TRIGGER)
+// -----------------------------------------------------------------------------------
 exports.decideRequest = async (req, res) => {
   const id = Number(req.params.id);
   const { action, note } = req.body;
-  const conn = await pool.getConnection(); // Use connection for transaction
+  const conn = await pool.getConnection(); 
 
-  
+  try {
+    await conn.beginTransaction(); // Start transaction
 
-  const [[lr]] = await pool.query('SELECT * FROM leave_requests WHERE id=?', [id]);
-  if (!lr) return res.status(404).json({ ok:false, message: 'Request not found' });
-  if (lr.status !== 'PENDING' && action !== 'RESPOND') {
-    return res.status(400).json({ ok:false, message: 'Already decided' });
-  }
+    const [[lr]] = await conn.query('SELECT * FROM leave_requests WHERE id=?', [id]);
+    if (!lr) {
+        await conn.rollback();
+        return res.status(404).json({ ok:false, message: 'Request not found' });
+    }
+    if (lr.status !== 'PENDING' && action !== 'RESPOND') {
+        await conn.rollback();
+        return res.status(400).json({ ok:false, message: 'Already decided' });
+    }
 
-  let newStatus = lr.status;
-  if (action === 'APPROVE') newStatus = 'APPROVED';
-  if (action === 'REJECT') newStatus = 'REJECTED';
+    let newStatus = lr.status;
+    if (action === 'APPROVE') newStatus = 'APPROVED';
+    if (action === 'REJECT') newStatus = 'REJECTED';
 
-  await pool.query(
-    `UPDATE leave_requests SET
-       status = ?,
-       decided_by_user_id = ?,
-       decided_at = NOW(),
-       decision_note = COALESCE(?, decision_note)
-     WHERE id = ?`,
-    [newStatus, req.user.id, note || null, id]
-  );
-
-  // Update leave_balances on approve
-  if (action === 'APPROVE') {
-    const year = dayjs(lr.start_date).year();
-    // 💡 CHANGE 2: Convert hours to days using 9 hours as a full day.
-    const daysUsed = (Number(lr.duration_hours) / 9.0).toFixed(2); 
-
-    await pool.query(
-      `INSERT INTO leave_balances (employee_id, leave_type_id, year, entitled_days, used_days)
-       VALUES (?,?,?,?,?)
-       ON DUPLICATE KEY UPDATE used_days = used_days + VALUES(used_days)`,
-      [lr.employee_id, lr.leave_type_id, year, 0, daysUsed]
+    await conn.query(
+      `UPDATE leave_requests SET
+         status = ?,
+         decided_by_user_id = ?,
+         decided_at = NOW(),
+         decision_note = COALESCE(?, decision_note)
+       WHERE id = ?`,
+      [newStatus, req.user.id, note || null, id]
     );
-  }
 
-  res.json({ ok:true, message: action === 'RESPOND' ? 'Response saved' : `Request ${newStatus.toLowerCase()}` });
+    // 💡 FIX 2: Automatic Unpaid Leave Creation Logic
+    if (action === 'APPROVE') {
+      const year = dayjs(lr.start_date).year();
+      // Calculate days used by this request (e.g., 9 hours -> 1.00 day, 4 hours -> 0.44 days)
+      const daysUsedByRequest = (Number(lr.duration_hours) / WORK_HOURS_PER_DAY); 
+
+      // 1. Update/Insert into leave_balances (using fixed conversion)
+      await conn.query(
+        `INSERT INTO leave_balances (employee_id, leave_type_id, year, entitled_days, used_days)
+         VALUES (?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE used_days = used_days + VALUES(used_days)`,
+        [lr.employee_id, lr.leave_type_id, year, 0, daysUsedByRequest.toFixed(2)]
+      );
+      
+      // 2. Fetch employee grade and leave rules
+      const [[emp]] = await conn.query('SELECT grade_id FROM employees WHERE id = ?', [lr.employee_id]);
+      const [[rules]] = await conn.query('SELECT annual_limit, medical_limit FROM leave_rules WHERE grade_id = ?', [emp?.grade_id || 0]);
+
+      // 3. Get TOTAL current usage after this approval
+      const [updatedBalances] = await conn.query(
+          `SELECT lb.leave_type_id, SUM(lb.used_days) AS total_used 
+           FROM leave_balances lb 
+           WHERE lb.employee_id = ? AND lb.year = ? 
+           GROUP BY lb.leave_type_id`, 
+           [lr.employee_id, year]
+      );
+
+      const annualLimit = Number(rules?.annual_limit || 0);
+      const medicalLimit = Number(rules?.medical_limit || 0);
+      
+      let leaveTypeMap = {};
+      for (const bal of updatedBalances) {
+          leaveTypeMap[bal.leave_type_id] = Number(bal.total_used);
+      }
+      
+      const currentAnnualUsed = leaveTypeMap[LEAVE_TYPE_ANNUAL_ID] || 0; 
+      const currentMedicalUsed = leaveTypeMap[LEAVE_TYPE_MEDICAL_ID] || 0; 
+
+      let exceededDays = 0;
+      let reason = '';
+      
+      // Check Annual Leave (ID 1)
+      if (annualLimit > 0 && lr.leave_type_id === LEAVE_TYPE_ANNUAL_ID && currentAnnualUsed > annualLimit) {
+          exceededDays = currentAnnualUsed - annualLimit;
+          reason = `Annual Leave limit (${annualLimit} days) exceeded by ${exceededDays.toFixed(2)} days by this request.`;
+      }
+      
+      // Check Medical Leave (ID 2)
+      if (medicalLimit > 0 && lr.leave_type_id === LEAVE_TYPE_MEDICAL_ID && currentMedicalUsed > medicalLimit) {
+          exceededDays = currentMedicalUsed - medicalLimit;
+          reason = `Medical Leave limit (${medicalLimit} days) exceeded by ${exceededDays.toFixed(2)} days by this request.`;
+      }
+
+      // 4. Create Unpaid Leave record if limits exceeded (with a small margin for float errors)
+      if (exceededDays > 0.01) { 
+          // Note: total_days for unpaid_leaves is the EXCESS amount.
+          await conn.query(
+              `INSERT INTO unpaid_leaves (employee_id, start_date, end_date, total_days, reason, status)
+               VALUES (?, ?, ?, ?, ?, 'Pending')`, // Set status to 'Pending' for HR review
+              [lr.employee_id, lr.start_date, lr.end_date, exceededDays.toFixed(2), reason] 
+          );
+      }
+    }
+
+    await conn.commit(); // Commit transaction
+    res.json({ ok:true, message: action === 'RESPOND' ? 'Response saved' : `Request ${newStatus.toLowerCase()}` });
+
+  } catch (err) {
+    await conn.rollback(); // Rollback on error
+    console.error(err);
+    res.status(500).json({ ok:false, message: err.message || 'Failed to process leave request' });
+
+  } finally {
+    conn.release();
+  }
 };
 
 exports.statusList = async (req, res) => {
@@ -153,6 +226,9 @@ exports.statusList = async (req, res) => {
   await exports.listRequests(req, res);
 };
 
+// -----------------------------------------------------------------------------------
+// CALENDAR FEED (Fixed to return hours as 1 decimal, as per previous discussion)
+// -----------------------------------------------------------------------------------
 exports.calendarFeed = async (req, res) => {
   const { from, to } = req.query;
 
@@ -192,7 +268,8 @@ exports.calendarFeed = async (req, res) => {
       title: `${r.full_name} - ${r.leave_type}`,
       start: r.start_date,
       end: r.end_date,
-      hours: r.duration_hours,
+      // Send hours rounded to 1 decimal place.
+      hours: Number(r.duration_hours).toFixed(1),
     }));
 
     // also return restrictions from calendar_restrictions if you added that:
@@ -277,6 +354,7 @@ exports.deleteRestriction = async (req, res) => {
 };
 
 
+
 exports.summary = async (req, res) => {
   const year = parseInt(req.query.year || String(dayjs().year()), 10);
 
@@ -306,7 +384,9 @@ exports.summary = async (req, res) => {
   });
 };
 
-// 隼 NEW: Employee leave balances for EmployeeLeaves.jsx (Overview Tab)
+// -----------------------------------------------------------------------------------
+// EMPLOYEE BALANCES (Overview Tab)
+// -----------------------------------------------------------------------------------
 exports.employeeBalances = async (req, res) => {
   try {
     const year = parseInt(req.query.year || String(dayjs().year()), 10);
@@ -329,24 +409,25 @@ exports.employeeBalances = async (req, res) => {
     }
     const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
 
+    // 💡 FIX 5: Use grade-based rules for entitlements and specific IDs for usage.
     const [rows] = await pool.query(
       `SELECT
           e.id AS employee_id,
           e.employee_code,
           e.full_name,
           COALESCE(d.name, e.department_name) AS department_name,
-          lr.annual_limit AS annualEntitlement,     -- 💡 CHANGE 3: Entitlement from Grade Rule
-          lr.medical_limit AS medicalEntitlement,    -- 💡 CHANGE 3: Entitlement from Grade Rule (Medical)
+          lr.annual_limit AS annualTotal,     -- From leave_rules
+          lr.medical_limit AS medicalTotal,    -- From leave_rules
           
-          -- Sum used days for 'Personal' leave type (ID 1), derived from hours/9
-          SUM(CASE WHEN lt.name = 'Personal' AND lb.year = ? THEN lb.used_days ELSE 0 END) AS annualUsed,
+          -- Sum used days for Personal/Annual (ID 1)
+          SUM(CASE WHEN lb.leave_type_id = ${LEAVE_TYPE_ANNUAL_ID} AND lb.year = ? THEN lb.used_days ELSE 0 END) AS annualUsed,
           
-          -- Sum used days for 'Sick' leave type (ID 2), derived from hours/9
-          SUM(CASE WHEN lt.name = 'Sick' AND lb.year = ? THEN lb.used_days ELSE 0 END) AS medicalUsed
+          -- Sum used days for Sick/Medical (ID 2)
+          SUM(CASE WHEN lb.leave_type_id = ${LEAVE_TYPE_MEDICAL_ID} AND lb.year = ? THEN lb.used_days ELSE 0 END) AS medicalUsed
           
        FROM employees e
        LEFT JOIN departments d ON d.id = e.department_id
-       LEFT JOIN leave_rules lr ON lr.grade_id = e.grade_id  -- 💡 CHANGE 3: Join with leave_rules for entitlements
+       LEFT JOIN leave_rules lr ON lr.grade_id = e.grade_id  
        LEFT JOIN leave_balances lb
          ON lb.employee_id = e.id AND lb.year = ?
        LEFT JOIN leave_types lt
@@ -357,9 +438,10 @@ exports.employeeBalances = async (req, res) => {
          lr.annual_limit, lr.medical_limit
        ORDER BY e.full_name ASC
        LIMIT ? OFFSET ?`,
-      [year, year, year, ...params, pageSize, offset] // Pass year for the SUM CASE
+      [year, year, year, ...params, pageSize, offset]
     );
 
+    
     const [countRows] = await pool.query(
       `SELECT COUNT(*) AS count
        FROM employees e
@@ -373,34 +455,28 @@ exports.employeeBalances = async (req, res) => {
       employee_code: r.employee_code,
       name: r.full_name,
       department: r.department_name || 'N/A',
-      
-      // Annual Leave (using rule limits)
+      // Data in DAYS format for frontend display (using Annual=1, Medical=2)
       annualUsed: Number(r.annualUsed || 0),
-      annualTotal: Number(r.annualEntitlement || 0),
-      
-      // Medical Leave (using rule limits) 💡 CHANGE 3: Renamed fields
-      medicalUsed: Number(r.medicalUsed || 0),
-      medicalTotal: Number(r.medicalEntitlement || 0),
-
-      // Half day columns remain static / placeholder
-      halfDay1: '0 / 0', 
+      annualTotal: Number(r.annualTotal || 0),
+      medicalUsed: Number(r.medicalUsed || 0), 
+      medicalTotal: Number(r.medicalTotal || 0),
+      halfDay1: '0 / 0',
       halfDay2: '0 / 0',
     }));
 
     res.json({ ok:true, page, pageSize, total, data, year });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ ok:false, message: err.message });
   }
 };
 
-// =========================================================================
-// 隼 Leave Rules (getRules, saveRule) are unchanged as the API path is correct
-// =========================================================================
 
-/**
- * Fetches all existing leave rules along with all grades.
- */
+// -----------------------------------------------------------------------------------
+// LEAVE RULES (UNCHANGED)
+// -----------------------------------------------------------------------------------
+
 exports.getRules = async (req, res) => {
   try {
     const [rows] = await pool.query(
@@ -414,9 +490,7 @@ exports.getRules = async (req, res) => {
        ORDER BY g.grade_id ASC`
     );
 
-    // Filter out rows where grade_name is null if the grades table isn't clean
     const data = rows.filter(r => r.grade_name);
-
     res.json({ ok: true, data });
   } catch (err) {
     console.error(err);
@@ -424,9 +498,6 @@ exports.getRules = async (req, res) => {
   }
 };
 
-/**
- * Inserts or updates a leave rule for a specific grade.
- */
 exports.saveRule = async (req, res) => {
   const { grade_id, annual_limit, medical_limit } = req.body;
 
@@ -445,7 +516,6 @@ exports.saveRule = async (req, res) => {
       [grade_id, annual_limit, medical_limit]
     );
 
-    // Fetch the saved rule back to confirm success, including auto-generated ID if created
     const [rows] = await pool.query(
       `SELECT lr.id, lr.grade_id, lr.annual_limit, lr.medical_limit, g.grade_name
        FROM leave_rules lr
@@ -459,4 +529,21 @@ exports.saveRule = async (req, res) => {
     console.error(err);
     res.status(500).json({ ok: false, message: 'Failed to save leave rule' });
   }
+};
+
+// ===================== EXPORTS =====================
+module.exports = {
+  calculateFullDays,
+  computeDurationHours,
+  createRequest: exports.createRequest,
+  listRequests: exports.listRequests,
+  decideRequest: exports.decideRequest,
+  statusList: exports.statusList,
+  calendarFeed: exports.calendarFeed,
+  summary: exports.summary,
+  employeeBalances: exports.employeeBalances,
+  saveRestriction: exports.saveRestriction,
+  deleteRestriction: exports.deleteRestriction,
+  getRules: exports.getRules,
+  saveRule: exports.saveRule,
 };
