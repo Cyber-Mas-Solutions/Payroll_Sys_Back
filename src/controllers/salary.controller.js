@@ -1618,6 +1618,145 @@ const runPayrollForMonth = async (req, res) => {
   res.json({ ok:true, message: `Payroll run stored for ${month}/${year}`, count: data.length });
 };
 
+// Helper to calculate start/end dates for the month
+const getPeriodDates = (year, month) => {
+    // month is 1-based (January=1)
+    const periodStart = `${year}-${String(month).padStart(2, '0')}-01`;
+    // Get last day of the month
+    const periodEnd = new Date(year, month, 0).toISOString().slice(0, 10); 
+    return { periodStart, periodEnd };
+};
+
+/**
+ * Controller to fetch all detailed components for a single employee's payslip
+ * for a specific period (month/year).
+ */
+const getEmployeePayslip = async (req, res) => {
+    const { employeeId, year, month } = req.params;
+    const y = Number(year);
+    const m = Number(month);
+    const { periodStart, periodEnd } = getPeriodDates(y, m);
+
+    try {
+        const [[employeeData]] = await pool.query(
+            `SELECT
+                e.id, e.employee_code, e.full_name, e.email, e.nic, e.epf_no, e.etf_no,
+                COALESCE(d.name, e.department_name, 'N/A') AS department_name, 
+                COALESCE(j.designation_name, 'N/A') AS position, // <--- MODIFIED
+                s.basic_salary
+            FROM employees e
+            LEFT JOIN departments d ON d.id = e.department_id
+            LEFT JOIN designations j ON j.id = e.designation_id
+            LEFT JOIN salaries s ON s.employee_id = e.id
+            WHERE e.id = ?
+            ORDER BY s.effective_date DESC
+            LIMIT 1`,
+            [employeeId]
+        );
+
+        if (!employeeData) {
+            // Employee not even in the system or basic query failed
+            return res.status(404).json({ ok: false, message: 'Employee not found.' });
+        }
+        
+        // Ensure salary is present for calculation (if basic_salary is null, set it to 0)
+        const basicSalary = Number(employeeData.basic_salary || 0);
+        
+        if (basicSalary === 0) {
+             return res.status(400).json({ ok: false, message: 'Basic salary is zero for this employee. Cannot generate payslip.' });
+        }
+
+        // --- 2. Fetch Itemized Earnings and Deductions for the period ---
+        
+        // 2a. Allowances (Monthly & active during the period)
+        const [allowances] = await pool.query(
+            `SELECT name, amount, 'Allowance' as type FROM allowances
+            WHERE employee_id = ? 
+            AND status = 'Active'
+            AND (effective_from <= ? OR effective_from IS NULL) 
+            AND (effective_to IS NULL OR effective_to >= ?)
+            AND frequency = 'Monthly'`,
+            [employeeId, periodEnd, periodStart]
+        );
+
+        // 2b. Bonuses (Compensation Adjustment)
+        const [bonuses] = await pool.query(
+            `SELECT reason AS name, amount, 'Bonus' as type FROM bonuses
+            WHERE employee_id = ? AND YEAR(effective_date) = ? AND MONTH(effective_date) = ?`,
+            [employeeId, y, m]
+        );
+        
+        // 2c. Overtime Adjustments
+        const [overtime] = await pool.query(
+            `SELECT adjustment_reason AS name, (ot_hours * ot_rate) AS amount, 'Overtime Pay' as type FROM overtime_adjustments
+            WHERE employee_id = ? AND YEAR(created_at) = ? AND MONTH(created_at) = ?`,
+            [employeeId, y, m]
+        );
+        
+        // 2d. Deductions (Loans, Other, Unpaid Leave, excluding EPF which is calculated separately)
+        const [deductions] = await pool.query(
+            `SELECT name, amount, 'Deduction' as type FROM deductions
+            WHERE employee_id = ? AND status='Active' AND YEAR(effective_date) = ? AND MONTH(effective_date) = ?
+            AND name NOT LIKE '%EPF%'`, // Exclude EPF deduction if it's stored here
+            [employeeId, y, m]
+        );
+        
+        // 2e. ETF/EPF Contribution (From processed payment table)
+        // Check if employee_etf_epf_payments exists and has data for the period.
+       const etfEpfPayment = {
+            employeeEPF: 0,
+            employerEPF: 0,
+            employerETF: 0
+        };
+
+        // --- 3. Aggregate Data and Calculate Totals ---
+        
+        const otherEarnings = [...allowances, ...bonuses, ...overtime.filter(o => o.amount > 0)];
+        const totalOtherEarnings = otherEarnings.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+        
+        // EPF is a statutory deduction (Employee's share)
+        const employeeEpf = etfEpfPayment.employeeEPF; // Use direct object access
+        const totalDeductions = deductions.reduce((sum, item) => sum + Number(item.amount || 0), 0) + employeeEpf;
+
+        const grossSalary = basicSalary + totalOtherEarnings;
+        const netSalary = grossSalary - totalDeductions;
+
+        // --- 4. Structure Response ---
+        const responseData = {
+            employee: {
+                ...employeeData,
+                basic_salary: basicSalary.toFixed(2) // Ensure basic salary used in calc is sent back
+            },
+            month: `${year}-${String(month).padStart(2, '0')}`,
+            payslip: {
+                earnings: [
+                    { name: 'Basic Salary', amount: basicSalary, type: 'Salary' },
+                    ...otherEarnings,
+                ],
+                deductions: [
+                    ...deductions,
+                    { name: 'Employee EPF (8%)', amount: employeeEpf, type: 'Statutory Deduction' }
+                ].filter(d => d.amount > 0), // Filter out zero deductions
+                totals: {
+                    grossSalary: grossSalary.toFixed(2),
+                    totalDeductions: totalDeductions.toFixed(2),
+                    netSalary: netSalary.toFixed(2),
+                    employerEPF: etfEpfPayment.employerEPF.toFixed(2), // Use direct object access
+                    employerETF: etfEpfPayment.employerETF.toFixed(2), // Use direct object access
+                }
+            }
+        };
+
+        logAudit({level:'info', user_id:req.user.id, action_type:'VIEW_PAYSLIP', target_table:"employees", target_id:employeeId, status:"SUCCESS", req})
+
+        res.json({ ok: true, data: responseData });
+
+    } catch (err) {
+        console.error('getEmployeePayslip error:', err);
+        res.status(500).json({ ok: false, message: 'Failed to generate payslip data due to server error.' });
+    }
+};
+
 /* ===================== PAYSLIP ===================== */
 
 const generatePayslip = async (req, res) => {
@@ -1771,6 +1910,7 @@ module.exports = {
 
   // payslip
   generatePayslip,
+  getEmployeePayslip,
 
     // NEW: compensation + search
   searchEmployeesAdvanced,

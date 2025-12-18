@@ -85,74 +85,48 @@ const getEtfEpfProcessList = async (req, res) => {
 
     if (!numYear || !numMonth) return res.status(400).json({ ok: false, message: 'Year and Month required' });
 
-    // 1. Fetch active employees and their ETF/EPF settings
-    const [employeeRecords] = await pool.query(`
+    const [rows] = await pool.query(`
       SELECT 
         e.id AS employee_id,
         e.employee_code,
         e.full_name,
         e.joining_date,
-        d.name AS department_name, /* Fetch department name for display */
-        COALESCE(ee.epf_number, e.epf_no) AS epf_number, /* Use employee_etf_epf if available, fallback to employees.epf_no */
-        ee.etf_number,
-        COALESCE(ee.epf_contribution_rate, 8.00) AS epf_contribution_rate,
+        d.name AS department_name,
+        COALESCE(s.basic_salary, 0) AS basic_salary,
+        COALESCE(ee.epf_contribution_rate, 8.00) AS epf_rate,
         COALESCE(ee.employer_epf_rate, 12.00) AS employer_epf_rate,
-        COALESCE(ee.etf_contribution_rate, 3.00) AS etf_contribution_rate,
-        tet.id AS transaction_id
+        COALESCE(ee.etf_contribution_rate, 3.00) AS etf_rate
       FROM employees e
-      LEFT JOIN departments d ON d.id = e.department_id /* Join for department name */
+      LEFT JOIN departments d ON d.id = e.department_id
+      LEFT JOIN salaries s ON e.id = s.employee_id AND s.id = (
+          SELECT MAX(id) FROM salaries WHERE employee_id = e.id
+      )
       LEFT JOIN employee_etf_epf ee ON ee.employee_id = e.id
-      LEFT JOIN payroll_etf_epf_transactions tet ON tet.employee_id = e.id AND tet.period_year = ? AND tet.period_month = ?
       WHERE e.status = 'Active' 
+        AND (YEAR(e.joining_date) < ? OR (YEAR(e.joining_date) = ? AND MONTH(e.joining_date) <= ?))
       ORDER BY e.full_name
-    `, [numYear, numMonth]);
+    `, [numYear, numYear, numMonth]);
 
-    const results = [];
-    for (const record of employeeRecords) {
-      // 2. Filter by eligibility (joined on or before the period month)
-      if (record.joining_date) {
-        const joinDate = new Date(record.joining_date);
-        const joinY = joinDate.getFullYear();
-        const joinM = joinDate.getMonth() + 1; // 1-based month
+    const results = rows.map(record => {
+      const basic = Number(record.basic_salary);
+      const epfEmployee = (basic * record.epf_rate) / 100;
+      const epfEmployer = (basic * record.employer_epf_rate) / 100;
+      const etfAmount = (basic * record.etf_rate) / 100;
 
-        // Skip employee if they joined after the selected period month/year
-        if (numYear < joinY || (numYear === joinY && numMonth < joinM)) {
-          continue; 
-        }
-      }
-
-      // 3. Get Gross Salary Components for the period
-      const grossComponents = await getGrossComponentsForPeriod(record.employee_id, numYear, numMonth);
-      const grossForEpf = grossComponents.gross_salary_for_epf;
-      
-      // Calculate contributions based on the fetched gross salary
-      const epfEmpRate = Number(record.epf_contribution_rate || 8);
-      const epfCompRate = Number(record.employer_epf_rate || 12);
-      const etfRate = Number(record.etf_contribution_rate || 3);
-      
-      const epfEmployee = (grossForEpf * epfEmpRate) / 100;
-      const epfEmployer = (grossForEpf * epfCompRate) / 100;
-      const etfAmount = (grossForEpf * etfRate) / 100;
-
-      results.push({
+      return {
         ...record,
-        ...grossComponents, 
-        gross_salary_for_epf: grossForEpf.toFixed(2),
-        // Add calculated amounts for frontend display
+        basic_salary: basic.toFixed(2),
         epf_employee_amount: epfEmployee.toFixed(2),
         epf_employer_share: epfEmployer.toFixed(2),
         etf_employer_contribution: etfAmount.toFixed(2),
-        
-        is_processed: record.transaction_id !== null,
-      });
-    }
+        total_statutory: (epfEmployee + epfEmployer + etfAmount).toFixed(2)
+      };
+    });
 
     res.json({ ok: true, data: results });
   } catch (err) {
-    console.error('getEtfEpfProcessList error:', err);
-    logEvent({ level: 'error', event_type: "GET_ETF_EPF_PROCESS_LIST_FAILED", user_id: req.user?.id || null, severity: "ERROR", error_message: err.message, event_details: { query: req.query, error: err.message } });
-    // IMPORTANT: Return a standard 500 error message. This will ensure the frontend shows the correct error message.
-    res.status(500).json({ ok: false, message: `Failed to load ETF/EPF processing list. Internal Error: ${err.message}` });
+    console.error(err);
+    res.status(500).json({ ok: false, message: 'Failed to load process list' });
   }
 };
 
@@ -246,7 +220,6 @@ const processEtfEpfPayments = async (req, res) => {
   }
 };
 
-
 // ===================== EXISTING FUNCTIONS (REMAINS UNCHANGED) =====================
 
 // Get all employees with ETF/EPF details
@@ -319,23 +292,20 @@ const getEtfEpfRecords = async (req, res) => {
 const getEmployeePaymentHistory = async (req, res) => {
   try {
     const { employeeId } = req.params;
-    // Assumes payroll_cycles table exists. Returns empty array if query fails (table missing).
     const [rows] = await pool.query(`
       SELECT 
-        id,
-        period_year,
-        period_month,
-        generated_at as payment_date,
-        total_deductions, 
-        net_salary
-      FROM payroll_cycles
-      WHERE employee_id = ?
-      ORDER BY period_year DESC, period_month DESC
-    `, [employeeId]).catch(() => []); 
-
+        id, 
+        basic_salary, 
+        effective_date,
+        (basic_salary * 0.08) as epf_emp,
+        (basic_salary * 0.12) as epf_employer,
+        (basic_salary * 0.03) as etf
+      FROM salaries 
+      WHERE employee_id = ? 
+      ORDER BY effective_date DESC
+    `, [employeeId]);
     res.json({ ok: true, data: rows });
   } catch (err) {
-    console.error('getHistory error:', err);
     res.status(500).json({ ok: false, message: 'Failed to fetch history' });
   }
 };
@@ -452,7 +422,7 @@ const updateEtfEpfRecord = async (req, res) => {
   }
 };
 
-// Delete
+// Delete ETF/EPF record
 const deleteEtfEpfRecord = async (req, res) => {
   const conn = await pool.getConnection();
   try {
@@ -465,11 +435,14 @@ const deleteEtfEpfRecord = async (req, res) => {
     logAudit({ user_id: req.user.id, action_type: "DELETE_ETF_EPF", target_table: "employee_etf_epf", target_id: id, before_state: record, after_state: null, req, status: "SUCCESS" });
     res.json({ ok: true, message: 'Deleted' });
   } catch(e) {
-    await conn.rollback(); res.status(500).json({ok:false});
-  } finally { conn.release(); }
+    await conn.rollback(); 
+    res.status(500).json({ok:false});
+  } finally { 
+    conn.release(); 
+  }
 };
 
-// Calculate
+// Calculate contributions
 const calculateContributions = async (req, res) => {
   try {
     const { employeeId, basicSalary } = req.body;
@@ -489,12 +462,232 @@ const calculateContributions = async (req, res) => {
   }
 };
 
+// Helper function for calculations
+const calculateContributionsHelper = (basic_salary, rates) => {
+  const basic = Number(basic_salary || 0);
 
+  // Use default rates if employee-specific rates are not set
+  const epf_contribution_rate = Number(rates.epf_contribution_rate || 8); // Employee EPF: 8% default
+  const employer_epf_rate = Number(rates.employer_epf_rate || 12); // Employer EPF: 12% default
+  const etf_contribution_rate = Number(rates.etf_contribution_rate || 3); // Employer ETF: 3% default
+
+  const employeeEpf = (basic * epf_contribution_rate) / 100;
+  const employerEpf = (basic * employer_epf_rate) / 100;
+  const employerEtf = (basic * etf_contribution_rate) / 100;
+
+  return {
+    employeeEpf,
+    employerEpf,
+    employerEtf,
+    grossForEpf: basic, // Based on your current requirement: Basic Salary
+  };
+};
+
+/**
+ * Get processed payment summary by period
+ */
+const getPaymentSummary = async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT 
+        period_year,
+        period_month,
+        COUNT(DISTINCT employee_id) AS employee_count,
+        SUM(gross_salary) AS total_basic_salary,
+        SUM(employee_epf_amount) AS total_employee_epf,
+        SUM(epf_employer_share) AS total_employer_epf,
+        SUM(employer_etf_amount) AS total_employer_etf,
+        MAX(processed_at) AS last_processed_date
+      FROM payroll_etf_epf_transactions
+      GROUP BY period_year, period_month
+      ORDER BY period_year DESC, period_month DESC
+    `);
+    
+    res.json({ ok: true, data: rows });
+  } catch (err) {
+    console.error('getPaymentSummary error:', err);
+    res.status(500).json({ ok: false, message: 'Failed to fetch payment summary' });
+  }
+};
+
+/**
+ * Get detailed payment history for a specific period
+ */
+const getPaymentHistory = async (req, res) => {
+  try {
+    const { year, month } = req.query;
+    
+    if (!year || !month) {
+      return res.status(400).json({ ok: false, message: 'Year and month required' });
+    }
+    
+    const [rows] = await pool.query(`
+      SELECT 
+        pt.id,
+        pt.employee_id,
+        e.full_name,
+        e.employee_code,
+        d.name AS department_name,
+        ee.epf_number,
+        ee.etf_number,
+        pt.gross_salary AS basic_salary,
+        pt.employee_epf_amount AS employee_epf_contribution,
+        pt.epf_employer_share AS employer_epf_contribution,
+        pt.employer_etf_amount AS employer_etf_contribution,
+        pt.processed_at AS process_date,
+        pt.processed_by
+      FROM payroll_etf_epf_transactions pt
+      JOIN employees e ON e.id = pt.employee_id
+      LEFT JOIN departments d ON d.id = e.department_id
+      LEFT JOIN employee_etf_epf ee ON ee.employee_id = e.id
+      WHERE pt.period_year = ? AND pt.period_month = ?
+      ORDER BY e.full_name
+    `, [year, month]);
+    
+    // Calculate totals
+    const totals = rows.reduce((acc, row) => ({
+      totalEmployeeEpf: acc.totalEmployeeEpf + Number(row.employee_epf_contribution || 0),
+      totalEmployerEpf: acc.totalEmployerEpf + Number(row.employer_epf_contribution || 0),
+      totalEmployerEtf: acc.totalEmployerEtf + Number(row.employer_etf_contribution || 0)
+    }), { totalEmployeeEpf: 0, totalEmployerEpf: 0, totalEmployerEtf: 0 });
+    
+    res.json({ 
+      ok: true, 
+      data: rows,
+      totals 
+    });
+  } catch (err) {
+    console.error('getPaymentHistory error:', err);
+    res.status(500).json({ ok: false, message: 'Failed to fetch payment history' });
+  }
+};
+
+// Process payment function
+const processPayment = async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const { year, month, employeeData } = req.body;
+
+    if (!year || !month || !Array.isArray(employeeData) || employeeData.length === 0) {
+      return res.status(400).json({ ok: false, message: 'Invalid payload: year, month, and employeeData array are required.' });
+    }
+
+    const periodYear = Number(year);
+    const periodMonth = Number(month);
+    
+    await connection.beginTransaction();
+
+    const insertPromises = employeeData.map(emp => {
+      const { id, epf_number, etf_number, basic_salary, grossForEpf, employeeEpf, employerEpf, employerEtf } = emp;
+
+      // Ensure required fields are present and valid
+      if (!id || !basic_salary || !employeeEpf || !employerEpf || !employerEtf) {
+        throw new Error(`Invalid data for employee ID ${id}`);
+      }
+      
+      // Use REPLACE INTO or ON DUPLICATE KEY UPDATE to handle reprocessing
+      const query = `
+        INSERT INTO employee_etf_epf_payments 
+        (employee_id, epf_number, etf_number, period_year, period_month, basic_salary, gross_for_epf, employee_epf_contribution, employer_epf_contribution, employer_etf_contribution)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE 
+          epf_number=VALUES(epf_number), etf_number=VALUES(etf_number), basic_salary=VALUES(basic_salary), gross_for_epf=VALUES(gross_for_epf), 
+          employee_epf_contribution=VALUES(employee_epf_contribution), employer_epf_contribution=VALUES(employer_epf_contribution), employer_etf_contribution=VALUES(employer_etf_contribution), 
+          process_date=CURRENT_TIMESTAMP
+      `;
+      
+      return connection.query(query, [
+        id, epf_number, etf_number, periodYear, periodMonth, 
+        basic_salary, grossForEpf, employeeEpf, employerEpf, employerEtf
+      ]);
+    });
+
+    await Promise.all(insertPromises);
+    await connection.commit();
+    
+    // Log audit event
+    logAudit({
+      level: 'info',
+      user_id: req.user.id,
+      action_type: 'PROCESS_ETF_EPF',
+      target_table: 'employee_etf_epf_payments',
+      target_id: null,
+      before_state: { year, month },
+      after_state: { count: employeeData.length },
+      status: 'SUCCESS',
+      req
+    });
+
+    res.status(200).json({ ok: true, message: `${employeeData.length} ETF/EPF payment records processed for ${periodYear}-${periodMonth}.` });
+
+  } catch (err) {
+    await connection.rollback();
+    console.error('processPayment error:', err);
+    logEvent({ 
+      level: 'error', 
+      event_type: "PROCESS_ETF_EPF_FAILED", 
+      user_id: req.user?.id || null, 
+      req, 
+      extra: { error: err.message, payload: req.body }
+    });
+    res.status(500).json({ ok: false, message: 'Failed to process ETF/EPF payments.' });
+  } finally {
+    connection.release();
+  }
+};
+
+// Test endpoint
+const testProcessList = async (req, res) => {
+  try {
+    console.log('🧪 Test endpoint called');
+    
+    // Return test data
+    const testData = [
+      {
+        employee_id: 1,
+        full_name: 'John Doe',
+        employee_code: 'EMP001',
+        department_name: 'IT Department',
+        basic_salary: 50000,
+        epf_employee_amount: 4000,
+        epf_employer_share: 6000,
+        etf_employer_contribution: 1500,
+        total_statutory: 11500
+      },
+      {
+        employee_id: 2,
+        full_name: 'Jane Smith',
+        employee_code: 'EMP002',
+        department_name: 'HR Department',
+        basic_salary: 45000,
+        epf_employee_amount: 3600,
+        epf_employer_share: 5400,
+        etf_employer_contribution: 1350,
+        total_statutory: 10350
+      }
+    ];
+    
+    return res.json({ 
+      ok: true, 
+      data: testData,
+      message: 'Test data loaded successfully'
+    });
+  } catch (err) {
+    console.error('Test endpoint error:', err);
+    return res.status(500).json({ 
+      ok: false, 
+      message: 'Test endpoint error' 
+    });
+  }
+};
+
+// Get employees without ETF/EPF
 const getEmployeesWithoutEtfEpf = async (req, res) => {
   const [rows] = await pool.query("SELECT id, full_name FROM employees");
   res.json({ok:true, data:rows});
 };
 
+// Module exports - ALL functions must be listed here
 module.exports = {
   getEtfEpfRecords,
   getEtfEpfById,
@@ -504,7 +697,17 @@ module.exports = {
   getEmployeesWithoutEtfEpf,
   calculateContributions,
   getEmployeePaymentHistory,
-  // === NEW EXPORTS FOR PROCESSING ===
-  getEtfEpfProcessList, 
-  processEtfEpfPayments,
+  
+  // Process functions
+  getProcessList: getEtfEpfProcessList, 
+  processPayment,
+  getPaymentSummary,
+  getPaymentHistory,
+  
+  // Test function
+  testProcessList,
+  
+  // Aliases for compatibility
+  getEtfEpfProcessList: getEtfEpfProcessList, 
+  processEtfEpfPayments: processEtfEpfPayments
 };

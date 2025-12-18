@@ -61,11 +61,20 @@ router.get('/etf-epf', etfEpfCtrl.getEtfEpfRecords);
 router.get('/etf-epf/employees-without', etfEpfCtrl.getEmployeesWithoutEtfEpf);
 
 router.get('/etf-epf/:employeeId/history', etfEpfCtrl.getEmployeePaymentHistory);
+
+
+
 router.get('/etf-epf/:id', etfEpfCtrl.getEtfEpfById);
 router.post('/etf-epf', etfEpfCtrl.createEtfEpfRecord);
 router.put('/etf-epf/:id', etfEpfCtrl.updateEtfEpfRecord);
 router.delete('/etf-epf/:id', etfEpfCtrl.deleteEtfEpfRecord);
 router.post('/etf-epf/calculate', etfEpfCtrl.calculateContributions);
+
+
+// Get list of employees for processing a month
+router.get('/etf-epf/process-list', etfEpfCtrl.getProcessList);
+// Process the payments for the selected month
+router.post('/etf-epf/process-payment', etfEpfCtrl.processPayment);
 
 // NEW ROUTE: Process deduction calculation and insertion
 router.post('/unpaid-leaves/:id/process', ctrl.processUnpaidLeaveDeduction);
@@ -75,6 +84,19 @@ router.post('/unpaid-leaves', ctrl.createUnpaidLeave);
 router.put('/unpaid-leaves/:id', ctrl.updateUnpaidLeave); 
 router.delete('/unpaid-leaves/:id', ctrl.deleteUnpaidLeave);
 
+// Add this test route
+router.get('/etf-epf/test', etfEpfCtrl.testProcessList);
+
+// Add this temporary route to salary.routes.js to debug:
+router.get('/etf-epf/debug', (req, res) => {
+  const functions = Object.keys(etfEpfCtrl);
+  res.json({ 
+    availableFunctions: functions,
+    hasGetProcessList: !!etfEpfCtrl.getProcessList,
+    hasTestProcessList: !!etfEpfCtrl.testProcessList,
+    hasGetEtfEpfProcessList: !!etfEpfCtrl.getEtfEpfProcessList
+  });
+});
 
 
 // month summary / run payroll
@@ -82,6 +104,7 @@ router.get('/summary', ctrl.monthSummary);
 router.post('/run', ctrl.runPayrollForMonth);
 
 // payslip
+router.get('/payslip/:employeeId/:year/:month', ctrl.getEmployeePayslip);
 router.get('/payslip', ctrl.generatePayslip);
 
 
