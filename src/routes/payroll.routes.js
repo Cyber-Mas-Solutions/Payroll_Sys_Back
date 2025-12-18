@@ -17,6 +17,12 @@ router.get('/payroll-transfers', ctrl.getPayrollTransfers);
 router.get('/export-payroll-csv', ctrl.exportPayrollCSV);
 router.get('/available-months', ctrl.getAvailableMonths);
 
+// Dashboard endpoints - use the OPTIMIZED versions
+router.get('/payroll-summary', ctrl.getPayrollSummaryOptimized);
+router.get('/payroll-status', ctrl.getPayrollStatusOptimized);
+router.get('/payroll-transfer-overview', ctrl.getPayrollTransferOverviewOptimized);
+router.post('/initiate-bank-transfer', ctrl.initiateBankTransfer);
+
 // Test endpoint for debugging
 router.get('/test-debug', (req, res) => {
   console.log('Test endpoint called by user:', req.user);
