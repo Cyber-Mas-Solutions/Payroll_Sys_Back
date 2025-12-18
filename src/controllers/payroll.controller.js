@@ -943,3 +943,781 @@ exports.exportPayrollCSV = async (req, res) => {
     res.status(500).json({ ok: false, message: 'Failed to export payroll data' });
   }
 };
+
+
+/**
+ * Get payroll summary for dashboard
+ */
+exports.getPayrollSummary = async (req, res) => {
+  try {
+    const { month, year } = req.query;
+    
+    const currentDate = new Date();
+    const currentMonth = month || currentDate.getMonth() + 1;
+    const currentYear = year || currentDate.getFullYear();
+    
+    // Get total employees count
+    const [[employeeCount]] = await pool.query(
+      'SELECT COUNT(*) as count FROM employees WHERE status = "Active"'
+    );
+    
+    // Calculate total gross, net, and deductions for the month
+    let grossTotal = 0;
+    let deductionsTotal = 0;
+    let netTotal = 0;
+    
+    // Get all active employees
+    const [employees] = await pool.query(
+      'SELECT id FROM employees WHERE status = "Active"'
+    );
+    
+    for (const emp of employees) {
+      const earnings = await calculateGrossSalary(emp.id, currentYear, currentMonth);
+      const deductions = await calculateDeductions(emp.id, currentYear, currentMonth);
+      
+      grossTotal += earnings.gross_salary;
+      deductionsTotal += deductions.total_deductions;
+      netTotal += (earnings.gross_salary - deductions.total_deductions);
+    }
+    
+    // Get previous month for comparison
+    const prevMonth = currentMonth === 1 ? 12 : currentMonth - 1;
+    const prevYear = currentMonth === 1 ? currentYear - 1 : currentYear;
+    let prevGrossTotal = 0;
+    
+    for (const emp of employees) {
+      const earnings = await calculateGrossSalary(emp.id, prevYear, prevMonth);
+      prevGrossTotal += earnings.gross_salary;
+    }
+    
+    // Calculate percentage change
+    const grossChange = prevGrossTotal > 0 ? 
+      ((grossTotal - prevGrossTotal) / prevGrossTotal * 100).toFixed(1) : 0;
+    
+    res.json({
+      ok: true,
+      data: {
+        totalEmployees: employeeCount.count,
+        grossSalary: grossTotal.toFixed(2),
+        netSalary: netTotal.toFixed(2),
+        totalDeductions: deductionsTotal.toFixed(2),
+        grossChange: grossChange > 0 ? `↑ ${grossChange}%` : `↓ ${Math.abs(grossChange)}%`,
+        grossTrend: grossChange > 0 ? 'up' : 'down',
+        pendingCases: 0, // You can calculate this based on your business logic
+      }
+    });
+    
+  } catch (err) {
+    console.error('getPayrollSummary error:', err);
+    res.status(500).json({ ok: false, message: 'Failed to get payroll summary' });
+  }
+};
+
+/**
+ * Get payroll processing status
+ */
+exports.getPayrollStatus = async (req, res) => {
+  try {
+    const { month, year } = req.query;
+    
+    const currentDate = new Date();
+    const currentMonth = month || currentDate.getMonth() + 1;
+    const currentYear = year || currentDate.getFullYear();
+    
+    // Check if payroll has been run for this month
+    const [payrollRun] = await pool.query(
+      'SELECT COUNT(*) as count FROM payroll_cycles WHERE period_year = ? AND period_month = ?',
+      [currentYear, currentMonth]
+    );
+    
+    const hasPayrollRun = payrollRun[0].count > 0;
+    
+    // Check if salary transfers have been processed
+    const [transfers] = await pool.query(
+      'SELECT COUNT(*) as count FROM payroll_transfers WHERE period_year = ? AND period_month = ?',
+      [currentYear, currentMonth]
+    );
+    
+    const hasTransfers = transfers[0].count > 0;
+    
+    // Get number of pending bank transfers
+    const [pending] = await pool.query(
+      'SELECT COUNT(*) as count FROM payroll_transfers WHERE status = "Pending" AND period_year = ? AND period_month = ?',
+      [currentYear, currentMonth]
+    );
+    
+    res.json({
+      ok: true,
+      data: {
+        calculation: hasPayrollRun ? 'Completed' : 'Not Started',
+        approval: hasPayrollRun ? 'Completed' : 'Not Started',
+        bankTransfer: hasTransfers ? (pending[0].count > 0 ? 'In Progress' : 'Completed') : 'Not Started',
+        completion: hasTransfers && pending[0].count === 0 ? 'Completed' : 'Not Started',
+        step: hasPayrollRun ? (hasTransfers ? (pending[0].count > 0 ? 3 : 4) : 2) : 1,
+        totalSteps: 4
+      }
+    });
+    
+  } catch (err) {
+    console.error('getPayrollStatus error:', err);
+    res.status(500).json({ ok: false, message: 'Failed to get payroll status' });
+  }
+};
+
+/**
+ * Get employees with payroll details for transfer overview
+ */
+exports.getPayrollTransferOverview = async (req, res) => {
+  try {
+    const { month, year, page = 1, limit = 10 } = req.query;
+    
+    if (!month || !year) {
+      return res.status(400).json({ ok: false, message: 'Month and year required' });
+    }
+    
+    const offset = (page - 1) * limit;
+    
+    // Get total count
+    const [[totalCount]] = await pool.query(
+      'SELECT COUNT(*) as count FROM employees WHERE status = "Active"'
+    );
+    
+    // Get paginated employees
+    const [employees] = await pool.query(
+      `SELECT 
+        e.id, 
+        e.employee_code, 
+        e.full_name, 
+        e.phone, 
+        d.name as department
+       FROM employees e
+       LEFT JOIN departments d ON d.id = e.department_id
+       WHERE e.status = 'Active'
+       ORDER BY e.full_name
+       LIMIT ? OFFSET ?`,
+      [parseInt(limit), parseInt(offset)]
+    );
+    
+    const result = [];
+    
+    for (const emp of employees) {
+      // Calculate payroll details
+      const earnings = await calculateGrossSalary(emp.id, year, month);
+      const deductions = await calculateDeductions(emp.id, year, month);
+      
+      // Check if salary has been transferred
+      const [[transfer]] = await pool.query(
+        'SELECT status FROM payroll_transfers WHERE employee_id = ? AND period_year = ? AND period_month = ?',
+        [emp.id, year, month]
+      );
+      
+      const netSalary = earnings.gross_salary - deductions.total_deductions;
+      
+      result.push({
+        id: emp.id,
+        name: emp.full_name,
+        employee_code: emp.employee_code,
+        phone: emp.phone || 'N/A',
+        department: emp.department || 'N/A',
+        gross_salary: earnings.gross_salary.toFixed(2),
+        net_salary: netSalary.toFixed(2),
+        deductions: deductions.total_deductions.toFixed(2),
+        bank_status: transfer?.status || 'Pending'
+      });
+    }
+    
+    res.json({
+      ok: true,
+      data: result,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: totalCount.count,
+        totalPages: Math.ceil(totalCount.count / limit)
+      }
+    });
+    
+  } catch (err) {
+    console.error('getPayrollTransferOverview error:', err);
+    res.status(500).json({ ok: false, message: 'Failed to get transfer overview' });
+  }
+};
+
+/**
+ * Initiate salary bank transfer
+ */
+exports.initiateBankTransfer = async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { employee_ids, month, year } = req.body;
+    const user_id = req.user.id;
+    
+    if (!employee_ids || !Array.isArray(employee_ids) || employee_ids.length === 0) {
+      return res.status(400).json({ ok: false, message: 'employee_ids array required' });
+    }
+    if (!month || !year) {
+      return res.status(400).json({ ok: false, message: 'month and year required' });
+    }
+    
+    await conn.beginTransaction();
+    const processed = [];
+    
+    for (const employee_id of employee_ids) {
+      // Check if already transferred
+      const [[existing]] = await conn.query(
+        'SELECT id, status FROM payroll_transfers WHERE employee_id = ? AND period_year = ? AND period_month = ?',
+        [employee_id, year, month]
+      );
+      
+      if (existing && existing.status === 'Completed') {
+        console.log(`Salary already transferred for employee ${employee_id}`);
+        continue;
+      }
+      
+      // Get payroll details
+      const earnings = await calculateGrossSalary(employee_id, year, month);
+      const deductions = await calculateDeductions(employee_id, year, month);
+      const netSalary = earnings.gross_salary - deductions.total_deductions;
+      
+      if (existing) {
+        // Update existing transfer
+        await conn.query(
+          `UPDATE payroll_transfers 
+           SET gross_salary = ?, total_deductions = ?, net_salary = ?, 
+               status = 'Processing', processed_by = ?, updated_at = NOW()
+           WHERE id = ?`,
+          [earnings.gross_salary, deductions.total_deductions, netSalary, user_id, existing.id]
+        );
+      } else {
+        // Insert new transfer
+        await conn.query(
+          `INSERT INTO payroll_transfers 
+            (employee_id, period_year, period_month, gross_salary, total_deductions, net_salary, 
+             status, processed_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'Processing', ?, NOW(), NOW())`,
+          [employee_id, year, month, earnings.gross_salary, deductions.total_deductions, netSalary, user_id]
+        );
+      }
+      
+      processed.push(employee_id);
+    }
+    
+    await conn.commit();
+    
+    logAudit({
+      user_id,
+      action_type: 'INITIATE_BANK_TRANSFER',
+      target_table: 'payroll_transfers',
+      target_id: processed.join(','),
+      before_state: null,
+      after_state: { month, year, processed_count: processed.length },
+      req,
+      status: 'SUCCESS'
+    });
+    
+    res.json({
+      ok: true,
+      message: `Bank transfer initiated for ${processed.length} employee(s)`,
+      processed_count: processed.length
+    });
+    
+  } catch (err) {
+    await conn.rollback();
+    console.error('initiateBankTransfer error:', err);
+    logEvent({
+      level: 'error',
+      event_type: 'INITIATE_BANK_TRANSFER_ERROR',
+      user_id: req.user?.id,
+      severity: 'ERROR',
+      error_message: err.message
+    });
+    res.status(500).json({ ok: false, message: 'Failed to initiate bank transfer' });
+  } finally {
+    conn.release();
+  }
+};
+
+
+// Add these optimized functions to payroll.controller.js
+
+/**
+ * OPTIMIZED: Get payroll summary for dashboard (bulk calculation)
+ */
+exports.getPayrollSummaryOptimized = async (req, res) => {
+  try {
+    const { month, year } = req.query;
+    
+    const currentDate = new Date();
+    const currentMonth = month ? parseInt(month) : currentDate.getMonth() + 1;
+    const currentYear = year ? parseInt(year) : currentDate.getFullYear();
+    
+    // Get period dates for filtering
+    const periodStart = `${currentYear}-${String(currentMonth).padStart(2, '0')}-01`;
+    const periodEnd = new Date(currentYear, currentMonth, 0).toISOString().slice(0, 10);
+    
+    // Get all active employees with their basic salary in ONE query
+    const [employees] = await pool.query(`
+      SELECT 
+        e.id as employee_id,
+        e.full_name,
+        COALESCE(s.basic_salary, 0) as basic_salary
+      FROM employees e
+      LEFT JOIN salaries s ON s.employee_id = e.id 
+        AND s.id = (SELECT MAX(id) FROM salaries WHERE employee_id = e.id)
+      WHERE e.status = 'Active'
+    `);
+    
+    if (employees.length === 0) {
+      return res.json({
+        ok: true,
+        data: {
+          totalEmployees: 0,
+          grossSalary: '0.00',
+          netSalary: '0.00',
+          totalDeductions: '0.00',
+          grossChange: '0%',
+          grossTrend: 'up',
+          pendingCases: 0
+        }
+      });
+    }
+    
+    const employeeIds = employees.map(e => e.employee_id);
+    
+    // Bulk calculate allowances in ONE query
+    const [allowancesResult] = await pool.query(`
+      SELECT 
+        employee_id,
+        COALESCE(SUM(amount), 0) as total_allowances
+      FROM allowances
+      WHERE employee_id IN (?)
+        AND status = 'Active'
+        AND (effective_from IS NULL OR effective_from <= ?)
+        AND (effective_to IS NULL OR effective_to >= ?)
+      GROUP BY employee_id
+    `, [employeeIds, periodEnd, periodStart]);
+    
+    // Bulk calculate overtime in ONE query
+    const [overtimeResult] = await pool.query(`
+      SELECT 
+        employee_id,
+        COALESCE(SUM(ot_hours * ot_rate), 0) as total_overtime
+      FROM overtime_adjustments
+      WHERE employee_id IN (?)
+        AND YEAR(created_at) = ? 
+        AND MONTH(created_at) = ?
+      GROUP BY employee_id
+    `, [employeeIds, currentYear, currentMonth]);
+    
+    // Bulk calculate bonuses in ONE query
+    const [bonusesResult] = await pool.query(`
+      SELECT 
+        employee_id,
+        COALESCE(SUM(amount), 0) as total_bonuses
+      FROM bonuses
+      WHERE employee_id IN (?)
+        AND YEAR(effective_date) = ? 
+        AND MONTH(effective_date) = ?
+      GROUP BY employee_id
+    `, [employeeIds, currentYear, currentMonth]);
+    
+    // Bulk calculate deductions in ONE query (excluding EPF for now)
+    const [deductionsResult] = await pool.query(`
+      SELECT 
+        employee_id,
+        COALESCE(SUM(
+          CASE 
+            WHEN basis = 'Percent' AND percent IS NOT NULL 
+            THEN (percent/100) * COALESCE((SELECT basic_salary FROM salaries WHERE employee_id = d.employee_id ORDER BY id DESC LIMIT 1), 0)
+            ELSE COALESCE(amount, 0)
+          END
+        ), 0) as total_deductions
+      FROM deductions d
+      WHERE employee_id IN (?)
+        AND status = 'Active'
+        AND YEAR(effective_date) = ? 
+        AND MONTH(effective_date) = ?
+        AND name NOT LIKE '%EPF%'
+      GROUP BY employee_id
+    `, [employeeIds, currentYear, currentMonth]);
+    
+    // Bulk calculate EPF deductions in ONE query
+    const [epfResult] = await pool.query(`
+      SELECT 
+        ee.employee_id,
+        COALESCE(s.basic_salary, 0) as basic_salary,
+        COALESCE(ee.epf_contribution_rate, 8.00) as epf_rate,
+        COALESCE(ee.employer_epf_rate, 12.00) as employer_epf_rate,
+        COALESCE(ee.etf_contribution_rate, 3.00) as etf_rate
+      FROM employee_etf_epf ee
+      LEFT JOIN salaries s ON s.employee_id = ee.employee_id 
+        AND s.id = (SELECT MAX(id) FROM salaries WHERE employee_id = ee.employee_id)
+      WHERE ee.employee_id IN (?)
+    `, [employeeIds]);
+    
+    // Bulk calculate unpaid leave deductions in ONE query
+    const [unpaidLeaveResult] = await pool.query(`
+      SELECT 
+        employee_id,
+        COALESCE(SUM(deduction_amount), 0) as total_unpaid_leave
+      FROM unpaid_leaves
+      WHERE employee_id IN (?)
+        AND status = 'Processed'
+        AND YEAR(updated_at) = ? 
+        AND MONTH(updated_at) = ?
+      GROUP BY employee_id
+    `, [employeeIds, currentYear, currentMonth]);
+    
+    // Convert arrays to maps for O(1) lookups
+    const allowancesMap = {};
+    allowancesResult.forEach(item => {
+      allowancesMap[item.employee_id] = Number(item.total_allowances);
+    });
+    
+    const overtimeMap = {};
+    overtimeResult.forEach(item => {
+      overtimeMap[item.employee_id] = Number(item.total_overtime);
+    });
+    
+    const bonusesMap = {};
+    bonusesResult.forEach(item => {
+      bonusesMap[item.employee_id] = Number(item.total_bonuses);
+    });
+    
+    const deductionsMap = {};
+    deductionsResult.forEach(item => {
+      deductionsMap[item.employee_id] = Number(item.total_deductions);
+    });
+    
+    const epfMap = {};
+    epfResult.forEach(item => {
+      const basicSalary = Number(item.basic_salary || 0);
+      const epfRate = Number(item.epf_rate || 8.00);
+      epfMap[item.employee_id] = (basicSalary * epfRate) / 100;
+    });
+    
+    const unpaidLeaveMap = {};
+    unpaidLeaveResult.forEach(item => {
+      unpaidLeaveMap[item.employee_id] = Number(item.total_unpaid_leave);
+    });
+    
+    // Calculate totals in JavaScript (fast)
+    let totalGross = 0;
+    let totalDeductions = 0;
+    let totalNet = 0;
+    
+    employees.forEach(emp => {
+      const basic = Number(emp.basic_salary || 0);
+      const allowances = allowancesMap[emp.employee_id] || 0;
+      const overtime = overtimeMap[emp.employee_id] || 0;
+      const bonuses = bonusesMap[emp.employee_id] || 0;
+      
+      const gross = basic + allowances + overtime + bonuses;
+      const regularDeductions = deductionsMap[emp.employee_id] || 0;
+      const epfDeduction = epfMap[emp.employee_id] || 0;
+      const unpaidLeave = unpaidLeaveMap[emp.employee_id] || 0;
+      
+      const totalEmployeeDeductions = regularDeductions + epfDeduction + unpaidLeave;
+      
+      totalGross += gross;
+      totalDeductions += totalEmployeeDeductions;
+      totalNet += (gross - totalEmployeeDeductions);
+    });
+    
+    // Get previous month totals (using same optimized approach)
+    const prevMonth = currentMonth === 1 ? 12 : currentMonth - 1;
+    const prevYear = currentMonth === 1 ? currentYear - 1 : currentYear;
+    
+    const [prevOvertime] = await pool.query(`
+      SELECT COALESCE(SUM(ot_hours * ot_rate), 0) as total_overtime
+      FROM overtime_adjustments
+      WHERE YEAR(created_at) = ? AND MONTH(created_at) = ?
+    `, [prevYear, prevMonth]);
+    
+    const prevGross = totalGross - (overtimeResult.reduce((sum, item) => sum + item.total_overtime, 0)) 
+      + (prevOvertime[0]?.total_overtime || 0);
+    
+    const grossChange = prevGross > 0 ? 
+      ((totalGross - prevGross) / prevGross * 100).toFixed(1) : 0;
+    
+    res.json({
+      ok: true,
+      data: {
+        totalEmployees: employees.length,
+        grossSalary: totalGross.toFixed(2),
+        netSalary: totalNet.toFixed(2),
+        totalDeductions: totalDeductions.toFixed(2),
+        grossChange: `${grossChange > 0 ? '↑' : '↓'} ${Math.abs(grossChange)}%`,
+        grossTrend: grossChange > 0 ? 'up' : 'down',
+        pendingCases: 0
+      }
+    });
+    
+  } catch (err) {
+    console.error('getPayrollSummaryOptimized error:', err);
+    res.status(500).json({ ok: false, message: 'Failed to get payroll summary' });
+  }
+};
+
+/**
+ * OPTIMIZED: Get payroll transfer overview (bulk calculation)
+ */
+exports.getPayrollTransferOverviewOptimized = async (req, res) => {
+  try {
+    const { month, year, page = 1, limit = 10 } = req.query;
+    
+    if (!month || !year) {
+      return res.status(400).json({ ok: false, message: 'Month and year required' });
+    }
+    
+    const currentMonth = parseInt(month);
+    const currentYear = parseInt(year);
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    
+    const periodStart = `${currentYear}-${String(currentMonth).padStart(2, '0')}-01`;
+    const periodEnd = new Date(currentYear, currentMonth, 0).toISOString().slice(0, 10);
+    
+    // Get total count
+    const [[totalCount]] = await pool.query(
+      'SELECT COUNT(*) as count FROM employees WHERE status = "Active"'
+    );
+    
+    // Get paginated employees with their data
+    const [employees] = await pool.query(`
+      SELECT 
+        e.id as employee_id,
+        e.employee_code,
+        e.full_name,
+        e.phone,
+        d.name as department,
+        COALESCE(s.basic_salary, 0) as basic_salary
+      FROM employees e
+      LEFT JOIN departments d ON d.id = e.department_id
+      LEFT JOIN salaries s ON s.employee_id = e.id 
+        AND s.id = (SELECT MAX(id) FROM salaries WHERE employee_id = e.id)
+      WHERE e.status = 'Active'
+      ORDER BY e.full_name
+      LIMIT ? OFFSET ?
+    `, [parseInt(limit), offset]);
+    
+    if (employees.length === 0) {
+      return res.json({
+        ok: true,
+        data: [],
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: totalCount.count,
+          totalPages: Math.ceil(totalCount.count / limit)
+        }
+      });
+    }
+    
+    const employeeIds = employees.map(e => e.employee_id);
+    
+    // Bulk fetch all required data
+    const [allowances] = await pool.query(`
+      SELECT employee_id, COALESCE(SUM(amount), 0) as total
+      FROM allowances 
+      WHERE employee_id IN (?)
+        AND status = 'Active'
+        AND (effective_from IS NULL OR effective_from <= ?)
+        AND (effective_to IS NULL OR effective_to >= ?)
+      GROUP BY employee_id
+    `, [employeeIds, periodEnd, periodStart]);
+    
+    const [overtime] = await pool.query(`
+      SELECT employee_id, COALESCE(SUM(ot_hours * ot_rate), 0) as total
+      FROM overtime_adjustments
+      WHERE employee_id IN (?) 
+        AND YEAR(created_at) = ? 
+        AND MONTH(created_at) = ?
+      GROUP BY employee_id
+    `, [employeeIds, currentYear, currentMonth]);
+    
+    const [bonuses] = await pool.query(`
+      SELECT employee_id, COALESCE(SUM(amount), 0) as total
+      FROM bonuses
+      WHERE employee_id IN (?) 
+        AND YEAR(effective_date) = ? 
+        AND MONTH(effective_date) = ?
+      GROUP BY employee_id
+    `, [employeeIds, currentYear, currentMonth]);
+    
+    const [deductions] = await pool.query(`
+      SELECT employee_id, COALESCE(SUM(
+        CASE 
+          WHEN basis = 'Percent' AND percent IS NOT NULL 
+          THEN (percent/100) * COALESCE((SELECT basic_salary FROM salaries WHERE employee_id = d.employee_id ORDER BY id DESC LIMIT 1), 0)
+          ELSE COALESCE(amount, 0)
+        END
+      ), 0) as total
+      FROM deductions d
+      WHERE employee_id IN (?)
+        AND status = 'Active'
+        AND YEAR(effective_date) = ? 
+        AND MONTH(effective_date) = ?
+        AND name NOT LIKE '%EPF%'
+      GROUP BY employee_id
+    `, [employeeIds, currentYear, currentMonth]);
+    
+    const [epfData] = await pool.query(`
+      SELECT 
+        ee.employee_id,
+        COALESCE(s.basic_salary, 0) as basic_salary,
+        COALESCE(ee.epf_contribution_rate, 8.00) as epf_rate
+      FROM employee_etf_epf ee
+      LEFT JOIN salaries s ON s.employee_id = ee.employee_id 
+        AND s.id = (SELECT MAX(id) FROM salaries WHERE employee_id = ee.employee_id)
+      WHERE ee.employee_id IN (?)
+    `, [employeeIds]);
+    
+    const [unpaidLeaves] = await pool.query(`
+      SELECT employee_id, COALESCE(SUM(deduction_amount), 0) as total
+      FROM unpaid_leaves
+      WHERE employee_id IN (?) 
+        AND status = 'Processed'
+        AND YEAR(updated_at) = ? 
+        AND MONTH(updated_at) = ?
+      GROUP BY employee_id
+    `, [employeeIds, currentYear, currentMonth]);
+    
+    const [transfers] = await pool.query(`
+      SELECT employee_id, status 
+      FROM payroll_transfers 
+      WHERE employee_id IN (?) 
+        AND period_year = ? 
+        AND period_month = ?
+    `, [employeeIds, currentYear, currentMonth]);
+    
+    // Create lookup maps
+    const createMap = (arr, keyField, valueField) => {
+      const map = {};
+      arr.forEach(item => {
+        map[item[keyField]] = Number(item[valueField] || 0);
+      });
+      return map;
+    };
+    
+    const allowancesMap = createMap(allowances, 'employee_id', 'total');
+    const overtimeMap = createMap(overtime, 'employee_id', 'total');
+    const bonusesMap = createMap(bonuses, 'employee_id', 'total');
+    const deductionsMap = createMap(deductions, 'employee_id', 'total');
+    const unpaidLeaveMap = createMap(unpaidLeaves, 'employee_id', 'total');
+    
+    const epfMap = {};
+    epfData.forEach(item => {
+      const basicSalary = Number(item.basic_salary || 0);
+      const epfRate = Number(item.epf_rate || 8.00);
+      epfMap[item.employee_id] = (basicSalary * epfRate) / 100;
+    });
+    
+    const transferStatusMap = {};
+    transfers.forEach(item => {
+      transferStatusMap[item.employee_id] = item.status;
+    });
+    
+    // Build result array
+    const result = employees.map(emp => {
+      const basic = Number(emp.basic_salary || 0);
+      const allowances = allowancesMap[emp.employee_id] || 0;
+      const overtime = overtimeMap[emp.employee_id] || 0;
+      const bonuses = bonusesMap[emp.employee_id] || 0;
+      
+      const gross = basic + allowances + overtime + bonuses;
+      const regularDeductions = deductionsMap[emp.employee_id] || 0;
+      const epfDeduction = epfMap[emp.employee_id] || 0;
+      const unpaidLeave = unpaidLeaveMap[emp.employee_id] || 0;
+      
+      const totalDeductions = regularDeductions + epfDeduction + unpaidLeave;
+      const netSalary = gross - totalDeductions;
+      
+      return {
+        id: emp.employee_id,
+        name: emp.full_name,
+        employee_code: emp.employee_code,
+        phone: emp.phone || 'N/A',
+        department: emp.department || 'N/A',
+        gross_salary: gross.toFixed(2),
+        net_salary: netSalary.toFixed(2),
+        deductions: totalDeductions.toFixed(2),
+        bank_status: transferStatusMap[emp.employee_id] || 'Pending'
+      };
+    });
+    
+    res.json({
+      ok: true,
+      data: result,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: totalCount.count,
+        totalPages: Math.ceil(totalCount.count / limit)
+      }
+    });
+    
+  } catch (err) {
+    console.error('getPayrollTransferOverviewOptimized error:', err);
+    res.status(500).json({ ok: false, message: 'Failed to get transfer overview' });
+  }
+};
+
+/**
+ * OPTIMIZED: Get payroll status (fast)
+ */
+exports.getPayrollStatusOptimized = async (req, res) => {
+  try {
+    const { month, year } = req.query;
+    
+    const currentDate = new Date();
+    const currentMonth = month ? parseInt(month) : currentDate.getMonth() + 1;
+    const currentYear = year ? parseInt(year) : currentDate.getFullYear();
+    
+    // Use EXISTS instead of COUNT for faster checks
+    const [hasPayrollRun] = await pool.query(`
+      SELECT EXISTS(
+        SELECT 1 FROM payroll_cycles 
+        WHERE period_year = ? AND period_month = ?
+      ) as has_run
+    `, [currentYear, currentMonth]);
+    
+    const [hasTransfers] = await pool.query(`
+      SELECT EXISTS(
+        SELECT 1 FROM payroll_transfers 
+        WHERE period_year = ? AND period_month = ?
+      ) as has_transfers
+    `, [currentYear, currentMonth]);
+    
+    const [pendingCount] = await pool.query(`
+      SELECT COUNT(*) as count FROM payroll_transfers 
+      WHERE status = 'Pending' AND period_year = ? AND period_month = ?
+    `, [currentYear, currentMonth]);
+    
+    const calculation = hasPayrollRun[0].has_run ? 'Completed' : 'Not Started';
+    const bankTransfer = hasTransfers[0].has_transfers ? 
+      (pendingCount[0].count > 0 ? 'In Progress' : 'Completed') : 'Not Started';
+    const approval = hasPayrollRun[0].has_run ? 'Completed' : 'Not Started';
+    const completion = hasTransfers[0].has_transfers && pendingCount[0].count === 0 ? 'Completed' : 'Not Started';
+    
+    let step = 1;
+    if (hasPayrollRun[0].has_run) step = 2;
+    if (hasTransfers[0].has_transfers) step = 3;
+    if (hasTransfers[0].has_transfers && pendingCount[0].count === 0) step = 4;
+    
+    res.json({
+      ok: true,
+      data: {
+        calculation,
+        approval,
+        bankTransfer,
+        completion,
+        step,
+        totalSteps: 4
+      }
+    });
+    
+  } catch (err) {
+    console.error('getPayrollStatusOptimized error:', err);
+    res.status(500).json({ ok: false, message: 'Failed to get payroll status' });
+  }
+};
